@@ -98,18 +98,16 @@ def refresh_account_data(
     config = dict(config or _load_config())
     log = log_fn or logger.info
 
-    # 只有可能走协议登录时才去解析收件通道：RT/session 能成的话根本用不上邮箱，
-    # 没必要为了一个大概率不跑的分支先去连一遍邮箱服务。
-    mail_provider = None
-    mail_reason = ""
-    has_fast_path = bool(
-        str(extra.get("refresh_token") or extra.get("refreshToken") or "").strip()
-        or str(extra.get("session_token") or extra.get("sessionToken") or "").strip()
-    )
-    if allow_login and password and not has_fast_path:
+    def _resolve_mail_provider():
+        """惰性解析收件通道，只在真要走协议登录那一刻才连邮箱。
+
+        RT/session 能成的话根本用不上邮箱，没必要为了一个大概率不跑的分支先连
+        一遍收件服务；但 Session 那条路可能"看着成功其实没换出新 AT"再降级
+        过来，那时又必须拿得到通道 —— 所以交出去的是工厂，不是现成的 provider。
+        """
         from services.chatgpt_otp_mailbox import resolve_otp_mail_provider
 
-        mail_provider, mail_reason = resolve_otp_mail_provider(
+        return resolve_otp_mail_provider(
             email,
             account_extra=extra,
             config=config,
@@ -118,10 +116,6 @@ def refresh_account_data(
             task_control=task_control,
             attempt_id=attempt_id,
         )
-        if mail_provider is None:
-            log(f"[刷新Token] {email} 暂时读不到收件箱（{mail_reason}），需要邮箱验证码时会失败")
-        else:
-            log(f"[刷新Token] 收件通道: {getattr(mail_provider, 'display_name', '邮箱')} → {email}")
 
     class _Account:
         pass
@@ -139,8 +133,11 @@ def refresh_account_data(
     return TokenRefreshManager(
         proxy_url=proxy,
         extra_config=config,
-        mail_provider=mail_provider,
-        mail_unavailable_reason=mail_reason,
+        # 只要还有可能走到协议登录，就把收件通道的解析权交出去（惰性，
+        # 快路径成功时一次都不会调用）
+        mail_provider_resolver=(
+            _resolve_mail_provider if (allow_login and password) else None
+        ),
         allow_login=allow_login,
         log_fn=log,
     ).refresh_account(account)

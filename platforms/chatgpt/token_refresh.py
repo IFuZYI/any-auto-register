@@ -7,6 +7,10 @@
 
     ② Session 刷新(``refresh_by_session_token``):RT 没有或已失效时才用。
        拿 session_token 打 ``/api/auth/session`` 换 AT。只出 AT,不出 RT。
+       这个端点只是把会话 cookie 里**已经嵌着的** AT 回放出来,并不会真去
+       找 OpenAI 换一个新的,所以拿到结果必须再验一次:AT 与刷新前相同、或
+       换出来的新 AT 被 ``/backend-api/me`` 明确拒绝,都判这条策略失败,
+       继续降级到 ③ 走账号密码(带 2FA)重登录。
 
     ③ 协议登录(``refresh_by_login``):前两条都没材料或都失败时的兜底。
        邮箱 + 密码重跑一遍协议登录链,库里有 TOTP 密钥就自动算码过 2FA。
@@ -101,6 +105,7 @@ class TokenRefreshManager:
         extra_config: Optional[dict] = None,
         mail_provider=None,
         mail_unavailable_reason: str = "",
+        mail_provider_resolver: Optional[Callable[[], tuple]] = None,
         allow_login: bool = True,
         log_fn: Optional[Callable[[str], None]] = None,
     ):
@@ -110,6 +115,11 @@ class TokenRefreshManager:
             extra_config: 全局配置,协议登录要用(OTP 超时、接码参数等)
             mail_provider: 邮箱注入点,协议登录撞上邮箱验证码时用
             mail_unavailable_reason: 读不到收件箱时的原因,用于拼人话报错
+            mail_provider_resolver: 惰性邮箱工厂,返回 ``(provider, 失败原因)``。
+                只有真要走协议登录时才会被调用一次 —— 快路径(RT/Session)压根
+                用不上收件箱,不该为了一个大概率不跑的分支先去连一遍邮箱服务;
+                而 Session 那条路"看着成功其实没换出新 AT"再降级过来时,又必须
+                拿得到通道,所以只能靠惰性解析同时满足这两头。
             allow_login: 关掉就不走第三条协议登录兜底
             log_fn: 日志回调,后台任务用它把过程实时推给前端
         """
@@ -117,6 +127,7 @@ class TokenRefreshManager:
         self.extra_config = dict(extra_config or {})
         self.mail_provider = mail_provider
         self.mail_unavailable_reason = mail_unavailable_reason
+        self._mail_provider_resolver = mail_provider_resolver
         self.allow_login = allow_login
         self._log_fn = log_fn
         self.log = log_fn or logger.info
@@ -128,6 +139,30 @@ class TokenRefreshManager:
         """创建 HTTP 会话"""
         session = cffi_requests.Session(impersonate="chrome120", proxy=self.proxy_url)
         return session
+
+    def _resolve_mail_provider(self):
+        """惰性取邮箱注入点,只在真要走协议登录时才连一次收件通道。"""
+        if self.mail_provider is not None or self._mail_provider_resolver is None:
+            return self.mail_provider
+
+        resolver = self._mail_provider_resolver
+        self._mail_provider_resolver = None   # 只解析一次,失败了也不反复重试
+        try:
+            provider, reason = resolver()
+        except Exception as exc:
+            provider, reason = None, f"解析收件通道失败: {exc}"
+
+        self.mail_provider = provider
+        if reason:
+            self.mail_unavailable_reason = reason
+        if provider is None:
+            self.log(
+                f"[刷新Token] 暂时读不到收件箱（{self.mail_unavailable_reason}），"
+                "需要邮箱验证码时会失败"
+            )
+        else:
+            self.log(f"[刷新Token] 收件通道: {getattr(provider, 'display_name', '邮箱')}")
+        return provider
 
     # ── 策略一:OAuth Refresh Token ──
 
@@ -211,12 +246,28 @@ class TokenRefreshManager:
 
     # ── 策略二:Session Token ──
 
-    def refresh_by_session_token(self, session_token: str) -> TokenRefreshResult:
+    def refresh_by_session_token(
+        self,
+        session_token: str,
+        *,
+        previous_access_token: str = "",
+    ) -> TokenRefreshResult:
         """
         使用 Session Token 刷新(只出 AT,不出 RT)
 
+        ``/api/auth/session`` 只是把 NextAuth 会话 cookie 里已经嵌着的 AT 回放
+        出来,它自己不会去找 OpenAI 换新的 —— 会话里的 AT 早就过期或被作废时,
+        这个接口照样返回 200 和一个**与刷新前一模一样**的旧 AT。所以"HTTP 200
+        且有 accessToken"不足以判成功,得比对旧值再实打实验一次:
+
+        - 换回来的 AT 与刷新前相同 → 会话没换出新凭证,判失败,交给上层降级;
+        - 换回来的是新 AT → 拿它打 ``/backend-api/me`` 验,被上游明确拒绝
+          (401/403)同样判失败;
+        - 探测本身没跑通(网络抖动、5xx)不否定结果,只标记未验证。
+
         Args:
             session_token: 会话令牌
+            previous_access_token: 刷新前的 access_token,用来判断有没有真换新
 
         Returns:
             TokenRefreshResult: 刷新结果
@@ -252,7 +303,7 @@ class TokenRefreshManager:
             data = response.json()
 
             # 提取 access_token
-            access_token = data.get("accessToken")
+            access_token = str(data.get("accessToken") or "").strip()
             if not access_token:
                 result.error_message = "Session token 刷新失败: 未找到 accessToken"
                 logger.warning(result.error_message)
@@ -263,9 +314,26 @@ class TokenRefreshManager:
             expires_str = data.get("expires")
             if expires_str:
                 try:
-                    expires_at = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
-                except Exception:
-                    pass
+                    expires_at = datetime.fromisoformat(str(expires_str).replace("Z", "+00:00"))
+                except Exception as exc:
+                    logger.debug(f"session expires 解析失败: {expires_str} ({exc})")
+
+            previous = str(previous_access_token or "").strip()
+            if previous and access_token == previous:
+                result.error_message = (
+                    "Session token 刷新失败: 换回的 access_token 与刷新前相同，"
+                    "会话里没有新凭证"
+                )
+                logger.warning(result.error_message)
+                return result
+
+            verdict, detail = self._probe_access_token(access_token)
+            if verdict == "invalid":
+                result.error_message = (
+                    f"Session token 刷新失败: 换回的 access_token 校验未通过（{detail}）"
+                )
+                logger.warning(result.error_message)
+                return result
 
             result.success = True
             result.access_token = access_token
@@ -274,6 +342,8 @@ class TokenRefreshManager:
             result.session_token = str(rotated or session_token)
             result.expires_at = expires_at
 
+            if verdict == "unknown":
+                logger.info(f"Session 换出 access_token 但有效性未验证: {detail}")
             logger.info(f"Session token 刷新成功，过期时间: {expires_at}")
             return result
 
@@ -326,7 +396,7 @@ class TokenRefreshManager:
             if totp_secret:
                 flow.result.totp_secret = totp_secret
 
-            provider = self.mail_provider or MailboxUnavailableProvider(
+            provider = self._resolve_mail_provider() or MailboxUnavailableProvider(
                 email, self.mail_unavailable_reason
             )
             with mirror_protocol_logs(self._log_fn):
@@ -423,21 +493,32 @@ class TokenRefreshManager:
         email = str(getattr(account, "email", "") or "")
         final = TokenRefreshResult(success=False)
 
-        def _absorb(partial: TokenRefreshResult) -> None:
+        def _absorb(partial: TokenRefreshResult, *, usable: bool) -> None:
             """把某条策略拿到的凭证并进最终结果,只覆盖非空值。
 
             前一条策略可能已经刷出了 session_token,后一条失败返回的空值
             不该把它抹掉。
+
+            ``usable=False`` 时不吸收 access_token:Session 那条路判失败时手里
+            往往正攥着一个已被上游作废的 AT,收进来会被 ``build_extra_patch``
+            写回库里,把原先还能用的 AT 一起弄坏。其余凭证(RT/session/cookies)
+            无论成败都值得留下。
             """
-            for attr in ("access_token", "refresh_token", "session_token", "id_token", "cookie_header"):
+            for attr in ("refresh_token", "session_token", "id_token", "cookie_header"):
                 value = str(getattr(partial, attr, "") or "").strip()
                 if value:
                     setattr(final, attr, value)
+            if not usable:
+                return
+            access_token = str(getattr(partial, "access_token", "") or "").strip()
+            if access_token:
+                final.access_token = access_token
             if partial.expires_at:
                 final.expires_at = partial.expires_at
 
         refresh_token = str(getattr(account, "refresh_token", "") or "").strip()
         session_token = str(getattr(account, "session_token", "") or "").strip()
+        previous_access_token = str(getattr(account, "access_token", "") or "").strip()
         password = str(getattr(account, "password", "") or "").strip()
         totp_secret = str(getattr(account, "totp_secret", "") or "").strip()
 
@@ -448,7 +529,7 @@ class TokenRefreshManager:
                 refresh_token=refresh_token,
                 client_id=getattr(account, "client_id", None),
             )
-            _absorb(partial)
+            _absorb(partial, usable=partial.success)
             if partial.success:
                 final.success = True
                 final.strategy = STRATEGY_REFRESH_TOKEN
@@ -467,8 +548,11 @@ class TokenRefreshManager:
         # ② Session 刷新
         if session_token:
             self.log(f"[刷新Token] 尝试 Session 刷新: {email}")
-            partial = self.refresh_by_session_token(session_token)
-            _absorb(partial)
+            partial = self.refresh_by_session_token(
+                session_token,
+                previous_access_token=previous_access_token,
+            )
+            _absorb(partial, usable=partial.success)
             if partial.success:
                 final.success = True
                 final.strategy = STRATEGY_SESSION
@@ -490,7 +574,7 @@ class TokenRefreshManager:
         else:
             self.log(f"[刷新Token] 前两条路不通，改走协议登录: {email}")
             partial = self.refresh_by_login(email, password, totp_secret=totp_secret)
-            _absorb(partial)
+            _absorb(partial, usable=partial.success)
             if partial.success:
                 final.success = True
                 final.strategy = STRATEGY_LOGIN
@@ -508,9 +592,49 @@ class TokenRefreshManager:
         final.error_message = f"Token 刷新失败（{details}）" if details else "Token 刷新失败"
         return final
 
-    def validate_token(self, access_token: str) -> Tuple[bool, Optional[str]]:
+    def _probe_access_token(self, access_token: str) -> Tuple[str, str]:
+        """拿 access_token 打 ``/backend-api/me``,判定它到底还能不能用。
+
+        返回 ``(判定, 说明)``,判定只有三种取值:
+
+        - ``valid``:上游认这个 AT;
+        - ``invalid``:上游明确拒绝(401/403),这个 AT 已经废了;
+        - ``unknown``:探测本身没跑通(网络异常、5xx、429),不能据此否定 AT ——
+          一次网络抖动就把好号判死,比误判成功更糟。
         """
-        验证 Access Token 是否有效
+        token = str(access_token or "").strip()
+        if not token:
+            return "invalid", "没有 access_token"
+
+        from .status_probe import CHATGPT_ME_URL, CODEX_USER_AGENT
+
+        try:
+            session = self._create_session()
+            response = session.get(
+                CHATGPT_ME_URL,
+                headers={
+                    "authorization": f"Bearer {token}",
+                    "accept": "application/json",
+                    "user-agent": CODEX_USER_AGENT,
+                },
+                timeout=30
+            )
+        except Exception as exc:
+            return "unknown", f"探测异常: {exc}"
+
+        status = int(getattr(response, "status_code", 0) or 0)
+        if status == 200:
+            return "valid", ""
+        if status in (401, 403):
+            detail = describe_error(getattr(response, "text", "") or "")
+            return "invalid", f"HTTP {status} {detail}".strip()
+        return "unknown", f"HTTP {status}"
+
+    def validate_token(self, access_token: str) -> Tuple[bool, Optional[str]]:
+        """验证 Access Token 是否有效。
+
+        ``unknown``(探测没跑通)按有效处理:这里只用来否定**上游明确拒绝**的
+        AT,网络抖动不该被当成凭证失效。
 
         Args:
             access_token: 访问令牌
@@ -518,27 +642,9 @@ class TokenRefreshManager:
         Returns:
             Tuple[bool, Optional[str]]: (是否有效, 错误信息)
         """
-        try:
-            session = self._create_session()
-
-            # 调用 OpenAI API 验证 token
-            response = session.get(
-                "https://chatgpt.com/backend-api/me",
-                headers={
-                    "authorization": f"Bearer {access_token}",
-                    "accept": "application/json"
-                },
-                timeout=30
-            )
-
-            if response.status_code == 200:
-                return True, None
-            elif response.status_code == 401:
-                return False, "Token 无效或已过期"
-            elif response.status_code == 403:
-                return False, "账号可能被封禁"
-            else:
-                return False, f"验证失败: HTTP {response.status_code}"
-
-        except Exception as e:
-            return False, f"验证异常: {str(e)}"
+        verdict, detail = self._probe_access_token(access_token)
+        if verdict == "valid":
+            return True, None
+        if verdict == "unknown":
+            return True, detail or None
+        return False, detail or "Token 无效或已过期"

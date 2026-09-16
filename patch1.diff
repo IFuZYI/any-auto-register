@@ -1,0 +1,11 @@
+*** Begin Patch
+*** Update File: platforms/chatgpt/token_refresh.py
+@@
+     ② Session 刷新(``refresh_by_session_token``):RT 没有或已失效时才用。
+-       拿 session_token 打 ``/api/auth/session`` 换 AT。只出 AT,不出 RT。
++       拿 session_token 打 ``/api/auth/session`` 换 AT。只出 AT,不出 RT。
++       这个端点只是把会话 cookie 里**已经嵌着的** AT 回放出来,并不会真去
++       找 OpenAI 换一个新的,所以拿到结果必须再验一次:AT 与刷新前相同、或
++       换出来的新 AT 被 ``/backend-api/me`` 明确拒绝,都判这条策略失败,
++       继续降级到 ③ 走账号密码(带 2FA)重登录。
+*** End Patch

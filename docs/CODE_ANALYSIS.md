@@ -3486,15 +3486,31 @@ JWT 解析用 `_decode_jwt_payload()`(`platforms/chatgpt/status_probe.py:60`),�
 
 | 函数 | 位置 | 职责 |
 |---|---|---|
-| `is_account_deactivated_message(code,msg)` | `:15` | 窄判据。`code ∈ {account_deactivated, account_deleted}`,或文案含 `deleted or deactivated` 等三条 marker |
-| `looks_like_banned_response(body)` | `:44` | 宽判据。小写后子串匹配 `_BANNED_BODY_MARKERS`:`account_deactivated / accountdeactivated / deactivated / disabled / suspended / banned / violat / potential abuse / terminated` |
-| `account_plus_status(account)` | `:53` | 读 `extra["plus_check"]["status"]`,没查过返回 `"unchecked"` |
-| `filter_accounts_by_plus_status(accounts, want)` | `:67` | 列表页/批量任务按 plus 结论筛号(空 want 不筛) |
-| `classify_local_probe_state(probe)` | `:74` | 本地 probe → 原因码:`auth_401 / auth_deactivated / auth_403 / codex_401 / codex_deactivated / codex_403`,都不中返回 `""` |
-| `classify_remote_sync_state(sync)` | `:108` | 远端同步结果 → `remote_401 / remote_deactivated / remote_403` |
-| `apply_chatgpt_status_policy(account, local_probe, remote_sync)` | `:127` | **唯一改 status 的地方**:本地优先、远端兜底,命中任一原因就 `account.status = "invalid"`,并返回原因码 |
+| `is_account_deactivated_message(code,msg)` | `:52` | 窄判据。`code ∈ {account_deactivated, account_deleted}`,或文案含 `deleted or deactivated` 等三条 marker |
+| `looks_like_banned_response(body)` | `:81` | 宽判据。小写后子串匹配 `_BANNED_BODY_MARKERS`:`account_deactivated / accountdeactivated / deactivated / disabled / suspended / banned / violat / potential abuse / terminated` |
+| `account_plus_status(account)` | `:90` | 读 `extra["plus_check"]["status"]`,没查过返回 `"unchecked"` |
+| `filter_accounts_by_plus_status(accounts, want)` | `:104` | 列表页/批量任务按 plus 结论筛号(空 want 不筛) |
+| `classify_local_probe_state(probe)` | `:111` | 本地 probe → 失效原因码:`auth_401 / auth_deactivated / auth_403 / codex_401 / codex_deactivated / codex_403`,都不中返回 `""` |
+| `classify_remote_sync_state(sync)` | `:145` | 远端同步结果 → `remote_401 / remote_deactivated / remote_403` |
+| `classify_local_probe_health(probe)` | `:164` | **反方向**:本地 probe 有没有拿到"这号确实可用"的正面证据。唯一判据是 `auth.state == access_token_valid`,即 `/backend-api/me` 回了 200 |
+| `classify_remote_sync_health(sync)` | `:180` | **反方向**:远端 `remote_state == usable` |
+| `apply_chatgpt_status_policy(account, local_probe, remote_sync)` | `:189` | **唯一改 status 的地方**:命中失效原因 → 标 `invalid`;拿到健康证据 → 把 `invalid` 恢复回去。返回"这次为什么动了状态"(没动返回 `""`) |
 
-`INVALID_ACCOUNT_STATUS = "invalid"`。策略是**单向的**:只会把号标 `invalid`,永不"平反"回 `registered`。
+`INVALID_ACCOUNT_STATUS = "invalid"`。策略是**双向的**,内部分三步:
+
+| 顺序 | 条件 | 动作 | 返回 |
+|---|---|---|---|
+| 1 | `classify_*_state()` 命中失效原因 | `status = "invalid"`,并把**失效前**那份 status 记进 `extra["chatgpt_status_before_invalid"]`(`_mark_invalid()`,`:214`) | 原因码,如 `auth_401` |
+| 2 | 没命中失效,但 `classify_*_health()` 拿到正面证据,**且当前 status 正是 `invalid`** | 还原成 `extra` 里那份失效前状态(白名单 `registered/trial/subscribed/expired` 之外回落 `registered`),标记用完即删(`_restore_status()`,`:227`) | `RECOVERED_STATUS_REASON = "recovered"` |
+| 3 | 其余(结论不明 / 状态本来就正常) | 什么都不动 | `""` |
+
+三条必须守住的边界:
+
+- **异常优先于健康**:同一次探测里 auth 回 200、codex 说停用时按停用算 —— 第 1 步先跑。
+- **只有正面证据才恢复**:`probe_failed` / `missing_access_token` / 远端 `unreachable` 都是"没检测成",不算证据,不能把 `invalid` 洗白(一次网络抖动就把刚判定的失效翻回去,比不恢复更糟)。
+- **只动 `invalid`**:已经正常的号不会被每次探测重写一遍 —— 这正是"重探一个正常号、状态看着没变"的预期行为,不是 bug。
+
+调用方只判返回值真假:`api/actions.py:78` 要拿到非空 reason 才 `session.add()` 落库并刷 `updated_at`;`services/chatgpt_sync.py:213/232` 则不管返回什么都落库。
 
 `tests/test_chatgpt_account_state.py` 印证的关键行为:401(本地/远端)→ `invalid`;停用文案 → `invalid`;而 **`payment_required` 与 `quota_exhausted` 不标 invalid**(`test_payment_and_quota_do_not_mark_invalid`)—— 没钱/超额是业务状态,不是凭证坏了。
 
@@ -3513,6 +3529,7 @@ JWT 解析用 `_decode_jwt_payload()`(`platforms/chatgpt/status_probe.py:60`),�
 |---|---|---|
 | 注册成功 | `registered` | `platforms/chatgpt/chatgpt_registration_mode_adapter.py:176` 固定 `AccountStatus.REGISTERED` |
 | 本地/远端探测出 401 / 403+停用 / 停用文案 | `invalid` | `apply_chatgpt_status_policy()` |
+| 重探拿到正面证据(`/backend-api/me` 200 或远端 `usable`) | 还原成失效前那份 status,白名单外回落 `registered` | 同上,`_restore_status()` |
 | `trial` 且 `trial_end_time < now` | `expired` | `core/scheduler.py:71-72`,每 3600s 一轮 `check_trial_expiry()` |
 | `plan = plus/pro/team/enterprise` | **不自动写 `subscribed`** | 无代码路径 |
 | `trial_eligible` / `plus_active` | **不自动写 `trial`** | 只写 `extra["plus_check"]` |
@@ -3525,62 +3542,96 @@ JWT 解析用 `_decode_jwt_payload()`(`platforms/chatgpt/status_probe.py:60`),�
 
 #### 二、Token 刷新(`platforms/chatgpt/token_refresh.py`)
 
-##### 2.1 两条刷新路径
+##### 2.1 三条刷新路径
 
-`TokenRefreshManager`(`platforms/chatgpt/token_refresh.py:37`)持有两个端点:
+`TokenRefreshManager`(`platforms/chatgpt/token_refresh.py:91`)持有三个入口,统一由 `refresh_account(account)`(`:477`)按**代价从低到高**编排,第一条成了就不往下走:
 
-| 方式 | 方法 | 端点 | 请求 | 取回字段 |
-|---|---|---|---|---|
-| Session Token | `refresh_by_session_token()` `:66` | `GET https://chatgpt.com/api/auth/session` | Cookie `__Secure-next-auth.session-token`(domain `.chatgpt.com`),浏览器 UA(Chrome/120) | `accessToken`、`expires`(ISO,`Z`→`+00:00`) |
-| OAuth Refresh Token | `refresh_by_oauth_token()` `:134` | `POST https://auth.openai.com/oauth/token` | form-urlencoded:`client_id` / `grant_type=refresh_token` / `refresh_token` / `redirect_uri` | `access_token`、`refresh_token`(缺省沿用旧的)、`expires_in`(默认 3600) |
+| 顺序 | 策略 | 方法 | 端点 | 请求 | 取回字段 |
+|---|---|---|---|---|---|
+| ① | RT 刷新 | `refresh_by_oauth_token()` `:169` | `POST https://auth.openai.com/oauth/token` | form-urlencoded:`client_id` / `grant_type=refresh_token` / `refresh_token` / `redirect_uri` | `access_token`、`refresh_token`(缺省沿用旧的)、`expires_in`(默认 3600) |
+| ② | Session 刷新 | `refresh_by_session_token()` `:249` | `GET https://chatgpt.com/api/auth/session` | Cookie `__Secure-next-auth.session-token`(domain `.chatgpt.com`),浏览器 UA(Chrome/120) | `accessToken`、`expires`(ISO,`Z`→`+00:00`) |
+| ③ | 协议登录 | `refresh_by_login()` `:357` | 与注册同一条协议链(`flow.run_protocol_login`,纯协议不开浏览器) | 邮箱 + 密码;库里存了 `totp_secret` 就自动算码过 2FA,需要邮箱验证码时靠注入的收件通道 | 产出最全:AT + RT + session_token + id_token |
 
-`client_id` / `redirect_uri` 默认取 `platforms/chatgpt/constants.py` 的 `OAUTH_CLIENT_ID` / `OAUTH_REDIRECT_URI`(`platforms/chatgpt/token_refresh.py:57-59`),可由入参覆盖。HTTP 会话统一 `cffi_requests.Session(impersonate="chrome120", proxy=…)`,超时 30s。
+`client_id` / `redirect_uri` 默认取 `platforms/chatgpt/constants.py` 的 `OAUTH_CLIENT_ID` / `OAUTH_REDIRECT_URI`(`platforms/chatgpt/token_refresh.py:134-136`),可由入参覆盖。HTTP 会话统一 `cffi_requests.Session(impersonate="chrome120", proxy=…)`,超时 30s。
 
-结果统一为 `TokenRefreshResult`(`platforms/chatgpt/token_refresh.py:27`):`success / access_token / refresh_token / expires_at / error_message`。
+结果统一为 `TokenRefreshResult`(`platforms/chatgpt/token_refresh.py:62`):`success / access_token / refresh_token / session_token / id_token / cookie_header / expires_at / strategy / attempts / error_message`。**`success` 的唯一含义是"拿到了新的 access_token"**,顺带换到的 RT / session_token 一并带回,由调用方决定落库哪些。
 
-##### 2.2 优先级与失效判定
+##### 2.2 编排与降级
 
-`refresh_account(account)`(`platforms/chatgpt/token_refresh.py:208`)的顺序是**先 session、失败再 OAuth**:
+`refresh_account(account)`(`platforms/chatgpt/token_refresh.py:477`)按顺序:
 
-1. 有 `session_token` → 试 session 刷新,成功直接返回;
-2. 失败(或没有)→ 有 `refresh_token` → 试 OAuth 刷新,**结果直接返回,不再兜底**;
-3. 两者都没有 → `success=False`,`error_message="账号没有可用的刷新方式(缺少 session_token 和 refresh_token)"`。
+1. 有 `refresh_token` → ① RT 刷新,成功直接返回;
+2. 有 `session_token` → ② Session 刷新,成功直接返回;
+3. `allow_login` 为真且库里有密码 → ③ 协议登录兜底;
+4. 三条都没材料或都没成 → `success=False`,`error_message` 是三条失败原因的拼接(带 `strategy_label()`)。
 
-失效判定全部是**"非 200 即失败"**的粗判据,不区分 `invalid_grant` 与网络抖动:
+`_absorb(partial, usable=…)`(`:496`)把某条策略的产出并进最终结果,只覆盖非空值;`usable=False` 时**不吸收 access_token** —— 失败的那条路手里往往正攥着一个已被上游作废的 AT,收进来会被 `build_extra_patch` 写回库里,把原先还能用的 AT 一起弄坏。RT / session_token / cookies 无论成败都留下。
+
+##### 2.2.1 Session 刷新为什么必须"验货"
+
+`/api/auth/session` 是 NextAuth 的会话端点,它**只把 session cookie 里已经嵌着的 AT 回放出来**,自己不会去找 OpenAI 换新的。会话里的 AT 早过期或被作废时,它照样回 `200` + 一个**与刷新前一模一样**的旧 AT —— 于是"HTTP 200 且有 `accessToken`"这个判据会造出**看得见的假成功**:上层以为号救回来了,库里存的还是那个废 AT,而且再也不会降级到 ③。
+
+现在的判据(`platforms/chatgpt/token_refresh.py:321-347`):
 
 | 情形 | 处理 |
 |---|---|
-| HTTP != 200 | 失败,`error_message = "… 失败: HTTP {code}"`;OAuth 分支额外把 `describe_error(response.text)` 记到 warning 日志 |
-| 200 但没有 `accessToken` / `access_token` | 失败,"未找到 accessToken" |
-| 抛异常 | 失败,"… 刷新异常: {e}" |
+| 换回的 AT 与刷新前相同 | 失败,"会话里没有新凭证",继续降级 ③ |
+| 换回的是新 AT | 拿它打 `GET /backend-api/me` 实测:401/403 → 失败(`invalid`);200 → 成功 |
+| 探测没跑通(网络异常 / 5xx / 429) | **不否定结果**,按成功算,只记一条"有效性未验证"日志 |
+| HTTP != 200 | 失败,`error_message = "Session token 刷新失败: HTTP {code}"` |
+| 200 但没有 `accessToken` | 失败,"未找到 accessToken" |
+| 抛异常 | 失败,"Session token 刷新异常: {e}" |
 
-**没有任何自动重试、没有退避、没有并发保护**;`expires` 解析失败被裸 `except: pass` 吞掉(`platforms/chatgpt/token_refresh.py:119`)。`expires_at` 用 `datetime.utcnow()`(naive)算,与 session 路径拿到的 aware datetime **时区不一致**,直接比较会抛 `TypeError`。
+服务端可能轮换 session cookie,换了就把新的 `__Secure-next-auth.session-token` 一起带回(`:341`)。
 
-`validate_token(access_token)`(`platforms/chatgpt/token_refresh.py:245`)是独立的轻量校验:`GET /backend-api/me`,200→有效、401→"Token 无效或已过期"、403→"账号可能被封禁"。它与 `status_probe` 的 auth 段功能重复,但判据更粗且不带 Codex UA。
+③ 协议登录没有"验货"问题:拿的是刚登录出来的全新凭证,失败就明确失败,不装作成功。
 
-##### 2.3 触发时机
+##### 2.2.2 `_probe_access_token()`:本模块唯一"实打实打一次"的地方
 
-**没有定时刷新**。全部是**手动/惰性触发**:
+`_probe_access_token(at)`(`platforms/chatgpt/token_refresh.py:595`)打 `GET /backend-api/me`(带 `CODEX_USER_AGENT`),返回**三态**:
+
+| 判定 | 触发 | 语义 |
+|---|---|---|
+| `("valid", "")` | 200 | 上游认这个 AT |
+| `("invalid", msg)` | 401 / 403 | 上游明确拒绝,这个 AT 已经废了 |
+| `("unknown", msg)` | 网络异常、5xx、429 | **没结论**,不能据此否定 AT —— 一次抖动把好号判死比误判成功更糟 |
+
+`validate_token(at)`(`:633`)是它的薄封装(`(bool, Optional[str])`,`unknown` 按有效处理),仓库里**没有生产调用方**,只有测试在用 —— 别拿它当"强制判死"的入口。
+
+##### 2.3 触发时机与收件通道
+
+**没有定时刷新**(RT 快路径也不做 `/me` 复验,保持"一个 POST 就完事"的低成本),全部是**手动 / 批量 / 惰性触发**:
 
 | 触发点 | 位置 |
 |---|---|
+| 列表页平台动作 `refresh_token`(label"刷新 Token") | `platforms/chatgpt/plugin.py:83` → `:217`,参数 `allow_login` 默认开 |
+| 批量后台任务 | `api/tasks.py:1078` `_run_refresh_token()` → `services/chatgpt_token_refresh.refresh_account_data()` + `apply_refresh_result()` |
 | HTTP API `POST /chatgpt/{id}/refresh-token` | `api/chatgpt.py:62` ⚠️ **该路由未挂载,不可访问** |
-| 列表页平台动作 `refresh_token`(label"刷新 Token") | `platforms/chatgpt/plugin.py:83` → `:217` |
 
 `core/scheduler.py` 的定时循环只做两件事:`check_trial_expiry()`(3600s)与 `check_cpa_credentials()`(间隔来自配置),**不含 token 刷新**。
 
+收件通道是**惰性**的:`services/chatgpt_token_refresh.py:101` 交出去的是工厂 `_resolve_mail_provider` 而不是现成的 provider(`:138`),只在真要走 ③ 且需要邮箱验证码那一刻才连一次收件服务;失败也只解析一次、不反复重试,原因记进 `mail_unavailable_reason`(`platforms/chatgpt/token_refresh.py:143` `_resolve_mail_provider()`)。RT / session 能成的号一次都不会碰邮箱。
+
 ##### 2.4 刷新后回写哪些字段
 
-`api/chatgpt.py:72-83`(该文件未挂载,但回写逻辑与 plugin 动作一致,可作字段参考):
+引擎**不认识数据库**,落库全在 `services/chatgpt_token_refresh.py`:`build_extra_patch(result)`(`:146`)整理补丁,`apply_refresh_result(model, result, session=…)`(`:177`)写回账号行。
 
 | 落点 | 值 | 条件 |
 |---|---|---|
-| `extra["access_token"]` | 新 AT | 总是 |
-| `extra["refresh_token"]` | 新 RT | 仅 `result.refresh_token` 非空 |
-| `AccountModel.token` | 新 AT | 总是(冗余镜像,列表页读这一列) |
+| `extra["access_token"]` | 新 AT | 非空 |
+| `extra["refresh_token"]` | 新 RT | 非空 |
+| `extra["session_token"]` / `extra["id_token"]` | 顺带换到的 | 非空 |
+| `extra["cookies"]` | `Set-Cookie` 串 | 非空 |
+| `extra["chatgpt_has_refresh_token_solution"]` | `True` | 拿到了 RT |
+| `extra["chatgpt_token_refresh"]` | 留痕:`ok / strategy / strategy_label / message / expires_at / attempts[] / at` | 总是 |
+| `AccountModel.token` | 新 AT | 非空(冗余镜像,列表页读这一列) |
 | `AccountModel.updated_at` | `utcnow()` | 总是 |
 
-**`expires_at` 没有落库**:`TokenRefreshResult.expires_at` 算出来了,但 API 层没写。`platforms/chatgpt/token_refresh.py:281` 的 `refresh_account_token()` / `:318` 的 `validate_account_token()` 是从上游 codex-register 搬过来的**死代码** —— 它们引用 `get_db` / `crud` / `Account`,而文件头 `:19-22` 已把这些 import 注释掉("removed: external dep"),一调用就 `NameError`。真正在用的只有 `TokenRefreshManager` 类。
+补丁**只写非空字段**是有意的:Session 那条路只出 AT,拿空串覆盖掉库里原有的 `refresh_token` 等于把号弄坏。
+
+**`expires_at` 没有独立的列**,只落在 `extra["chatgpt_token_refresh"]["expires_at"]`。列表页平台动作走的是 `api/actions.py:83-94` 的 `account_extra_patch` 通道(字段并进 `extra`,并单独把 `access_token` 同步到 `AccountModel.token`)。
+
+⚠️ 刷新成功**不会**顺带改 `status`:`invalid` 要等下一次探测拿到正面证据才会被 `_restore_status()` 摘掉(见 1.7)。
 
 ---
 
