@@ -1,59 +1,125 @@
-"""
-Token 刷新模块
-支持 Session Token 和 OAuth Refresh Token 两种刷新方式
+"""Token 刷新模块
+
+按代价从低到高排三条路,第一条成了就不往下走:
+
+    ① RT 刷新(``refresh_by_oauth_token``):拿 refresh_token 走 OAuth
+       ``/oauth/token``。一次 POST 就完事,不碰风控,而且能顺带换回新的 RT。
+
+    ② Session 刷新(``refresh_by_session_token``):RT 没有或已失效时才用。
+       拿 session_token 打 ``/api/auth/session`` 换 AT。只出 AT,不出 RT。
+
+    ③ 协议登录(``refresh_by_login``):前两条都没材料或都失败时的兜底。
+       邮箱 + 密码重跑一遍协议登录链,库里有 TOTP 密钥就自动算码过 2FA。
+       这条路要几十秒、可能要邮箱验证码,但产出最全(AT + RT + session)。
+
+三条路都以「拿到新的 access_token」为最低目标 —— 这是本模块存在的意义,
+顺带换到的 RT / session_token 一并带回,由调用方决定落库哪些。
 """
 
 from __future__ import annotations
 
 import logging
-import json
-import time
-from typing import Optional, Dict, Any, Tuple
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, Tuple, Callable
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 
 from curl_cffi import requests as cffi_requests
 
 from platforms.chatgpt.protocol.response_summary import describe_error
 
-# from ..config.settings import get_settings  # removed: external dep
-# from ..database.session import get_db  # removed: external dep
-# from ..database import crud  # removed: external dep
-# from ..database.models import Account  # removed: external dep
-
 logger = logging.getLogger(__name__)
+
+# 三条策略的标识,落库留痕与前端展示都用这套
+STRATEGY_REFRESH_TOKEN = "refresh_token"
+STRATEGY_SESSION = "session"
+STRATEGY_LOGIN = "login"
+
+_STRATEGY_LABELS = {
+    STRATEGY_REFRESH_TOKEN: "RT 刷新",
+    STRATEGY_SESSION: "Session 刷新",
+    STRATEGY_LOGIN: "协议登录",
+}
+
+
+def strategy_label(strategy: str) -> str:
+    return _STRATEGY_LABELS.get(strategy, strategy or "未知方式")
+
+
+@dataclass
+class RefreshAttempt:
+    """一条策略的执行结果,失败原因要能直接展示给用户。"""
+
+    strategy: str
+    ok: bool
+    message: str = ""
 
 
 @dataclass
 class TokenRefreshResult:
-    """Token 刷新结果"""
+    """Token 刷新结果。
+
+    ``success`` 只在拿到新的 access_token 时为 True。顺带刷新到的
+    refresh_token / session_token 无论成败都带回来,调用方可以一起落库。
+    """
     success: bool
     access_token: str = ""
     refresh_token: str = ""
+    session_token: str = ""
+    id_token: str = ""
+    cookie_header: str = ""
+    strategy: str = ""
     expires_at: Optional[datetime] = None
     error_message: str = ""
+    attempts: list[RefreshAttempt] = field(default_factory=list)
+
+    def summary(self) -> str:
+        if self.success:
+            extras = []
+            if self.refresh_token:
+                extras.append("含 RT")
+            if self.session_token:
+                extras.append("含 Session")
+            suffix = f"({'、'.join(extras)})" if extras else ""
+            return f"Token 刷新成功（{strategy_label(self.strategy)}）{suffix}".strip()
+        return self.error_message or "Token 刷新失败"
 
 
 class TokenRefreshManager:
-    """
-    Token 刷新管理器
-    支持两种刷新方式：
-    1. Session Token 刷新（优先）
-    2. OAuth Refresh Token 刷新
+    """Token 刷新管理器。
+
+    优先级:RT 刷新 → Session 刷新 → 协议登录兜底。
     """
 
     # OpenAI OAuth 端点
     SESSION_URL = "https://chatgpt.com/api/auth/session"
     TOKEN_URL = "https://auth.openai.com/oauth/token"
 
-    def __init__(self, proxy_url: Optional[str] = None):
+    def __init__(
+        self,
+        proxy_url: Optional[str] = None,
+        *,
+        extra_config: Optional[dict] = None,
+        mail_provider=None,
+        mail_unavailable_reason: str = "",
+        allow_login: bool = True,
+        log_fn: Optional[Callable[[str], None]] = None,
+    ):
         """
-        初始化 Token 刷新管理器
-
         Args:
             proxy_url: 代理 URL
+            extra_config: 全局配置,协议登录要用(OTP 超时、接码参数等)
+            mail_provider: 邮箱注入点,协议登录撞上邮箱验证码时用
+            mail_unavailable_reason: 读不到收件箱时的原因,用于拼人话报错
+            allow_login: 关掉就不走第三条协议登录兜底
+            log_fn: 日志回调,后台任务用它把过程实时推给前端
         """
         self.proxy_url = proxy_url
+        self.extra_config = dict(extra_config or {})
+        self.mail_provider = mail_provider
+        self.mail_unavailable_reason = mail_unavailable_reason
+        self.allow_login = allow_login
+        self._log_fn = log_fn
+        self.log = log_fn or logger.info
         from .constants import OAUTH_CLIENT_ID, OAUTH_REDIRECT_URI
         self._oauth_client_id = OAUTH_CLIENT_ID
         self._oauth_redirect_uri = OAUTH_REDIRECT_URI
@@ -63,9 +129,91 @@ class TokenRefreshManager:
         session = cffi_requests.Session(impersonate="chrome120", proxy=self.proxy_url)
         return session
 
+    # ── 策略一:OAuth Refresh Token ──
+
+    def refresh_by_oauth_token(
+        self,
+        refresh_token: str,
+        client_id: Optional[str] = None
+    ) -> TokenRefreshResult:
+        """
+        使用 OAuth Refresh Token 刷新(最优先,一次 POST 就能出 AT + 新 RT)
+
+        Args:
+            refresh_token: OAuth 刷新令牌
+            client_id: OAuth Client ID
+
+        Returns:
+            TokenRefreshResult: 刷新结果
+        """
+        result = TokenRefreshResult(success=False, strategy=STRATEGY_REFRESH_TOKEN)
+
+        try:
+            session = self._create_session()
+
+            # 使用配置的 client_id 或默认值
+            client_id = client_id or self._oauth_client_id
+
+            # 构建请求体
+            token_data = {
+                "client_id": client_id,
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "redirect_uri": self._oauth_redirect_uri
+            }
+
+            response = session.post(
+                self.TOKEN_URL,
+                headers={
+                    "content-type": "application/x-www-form-urlencoded",
+                    "accept": "application/json"
+                },
+                data=token_data,
+                timeout=30
+            )
+
+            if response.status_code != 200:
+                result.error_message = (
+                    f"OAuth token 刷新失败: HTTP {response.status_code}"
+                    f"（{describe_error(response.text)}）"
+                )
+                logger.warning(result.error_message)
+                return result
+
+            data = response.json()
+
+            # 提取令牌
+            access_token = data.get("access_token")
+            new_refresh_token = data.get("refresh_token", refresh_token)
+            expires_in = data.get("expires_in", 3600)
+
+            if not access_token:
+                result.error_message = "OAuth token 刷新失败: 未找到 access_token"
+                logger.warning(result.error_message)
+                return result
+
+            # 计算过期时间
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+
+            result.success = True
+            result.access_token = access_token
+            result.refresh_token = new_refresh_token
+            result.id_token = str(data.get("id_token") or "")
+            result.expires_at = expires_at
+
+            logger.info(f"OAuth token 刷新成功，过期时间: {expires_at}")
+            return result
+
+        except Exception as e:
+            result.error_message = f"OAuth token 刷新异常: {str(e)}"
+            logger.error(result.error_message)
+            return result
+
+    # ── 策略二:Session Token ──
+
     def refresh_by_session_token(self, session_token: str) -> TokenRefreshResult:
         """
-        使用 Session Token 刷新
+        使用 Session Token 刷新(只出 AT,不出 RT)
 
         Args:
             session_token: 会话令牌
@@ -73,7 +221,7 @@ class TokenRefreshManager:
         Returns:
             TokenRefreshResult: 刷新结果
         """
-        result = TokenRefreshResult(success=False)
+        result = TokenRefreshResult(success=False, strategy=STRATEGY_SESSION)
 
         try:
             session = self._create_session()
@@ -116,11 +264,14 @@ class TokenRefreshManager:
             if expires_str:
                 try:
                     expires_at = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
-                except:
+                except Exception:
                     pass
 
             result.success = True
             result.access_token = access_token
+            # 服务端可能轮换 session cookie,换了就带回去落库
+            rotated = session.cookies.get("__Secure-next-auth.session-token", "")
+            result.session_token = str(rotated or session_token)
             result.expires_at = expires_at
 
             logger.info(f"Session token 刷新成功，过期时间: {expires_at}")
@@ -131,116 +282,231 @@ class TokenRefreshManager:
             logger.error(result.error_message)
             return result
 
-    def refresh_by_oauth_token(
+    # ── 策略三:协议登录兜底 ──
+
+    def refresh_by_login(
         self,
-        refresh_token: str,
-        client_id: Optional[str] = None
+        email: str,
+        password: str,
+        *,
+        totp_secret: str = "",
     ) -> TokenRefreshResult:
+        """邮箱 + 密码重跑协议登录链拿 AT(纯协议,不开浏览器)。
+
+        RT / session 都没有或都失效时才走这条。库里存了 TOTP 密钥就自动算码
+        过 2FA;OpenAI 要邮箱验证码时靠注入的 ``mail_provider`` 收码。
+
+        产出最全:AT + RT + session_token 一起带回来。
         """
-        使用 OAuth Refresh Token 刷新
+        result = TokenRefreshResult(success=False, strategy=STRATEGY_LOGIN)
 
-        Args:
-            refresh_token: OAuth 刷新令牌
-            client_id: OAuth Client ID
+        if not email:
+            result.error_message = "账号没有邮箱，无法协议登录"
+            return result
+        if not password:
+            result.error_message = "库里没有密码，无法协议登录"
+            return result
 
-        Returns:
-            TokenRefreshResult: 刷新结果
-        """
-        result = TokenRefreshResult(success=False)
+        from platforms.chatgpt.protocol import AuthFlow, Config
+        from platforms.chatgpt.protocol_log_relay import mirror_protocol_logs
+        from platforms.chatgpt.rt_backfill import MailboxUnavailableProvider
 
+        flow: Optional[AuthFlow] = None
+        failure = ""
         try:
-            session = self._create_session()
-
-            # 使用配置的 client_id 或默认值
-            client_id = client_id or self._oauth_client_id
-
-            # 构建请求体
-            token_data = {
-                "client_id": client_id,
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-                "redirect_uri": self._oauth_redirect_uri
-            }
-
-            response = session.post(
-                self.TOKEN_URL,
-                headers={
-                    "content-type": "application/x-www-form-urlencoded",
-                    "accept": "application/json"
+            flow = AuthFlow(
+                Config(proxy=self.proxy_url),
+                sms_callback=self._build_sms_callback(),
+                env_overrides=self._login_env_overrides(),
+                account_callback=lambda _email: {
+                    "password": password,
+                    "totp_secret": totp_secret,
                 },
-                data=token_data,
-                timeout=30
             )
+            if totp_secret:
+                flow.result.totp_secret = totp_secret
 
-            if response.status_code != 200:
-                result.error_message = f"OAuth token 刷新失败: HTTP {response.status_code}"
-                logger.warning(f"{result.error_message}, 服务端说: {describe_error(response.text)}")
-                return result
+            provider = self.mail_provider or MailboxUnavailableProvider(
+                email, self.mail_unavailable_reason
+            )
+            with mirror_protocol_logs(self._log_fn):
+                flow.run_protocol_login(provider, email, password)
+        except Exception as exc:
+            # 中断请求(手动停止/跳过)必须原样抛出去,不能当成"这条策略失败了"
+            from core.task_runtime import TaskInterruption
 
-            data = response.json()
+            if isinstance(exc, TaskInterruption):
+                raise
+            failure = str(exc) or exc.__class__.__name__
+            logger.warning(f"协议登录报错: {failure}")
 
-            # 提取令牌
-            access_token = data.get("access_token")
-            new_refresh_token = data.get("refresh_token", refresh_token)
-            expires_in = data.get("expires_in", 3600)
+        # 即便末段抛异常,已经到手的凭证也不该扔掉 —— AT 是链路中段拿到的
+        if flow is not None:
+            auth = flow.result
+            for attr in ("access_token", "refresh_token", "session_token", "id_token", "cookie_header"):
+                value = str(getattr(auth, attr, "") or "").strip()
+                if value:
+                    setattr(result, attr, value)
 
-            if not access_token:
-                result.error_message = "OAuth token 刷新失败: 未找到 access_token"
-                logger.warning(result.error_message)
-                return result
-
-            # 计算过期时间
-            expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
-
+        if result.access_token:
             result.success = True
-            result.access_token = access_token
-            result.refresh_token = new_refresh_token
-            result.expires_at = expires_at
-
-            logger.info(f"OAuth token 刷新成功，过期时间: {expires_at}")
+            if failure:
+                logger.info(f"协议登录末段报错但 AT 已到手: {failure}")
             return result
 
-        except Exception as e:
-            result.error_message = f"OAuth token 刷新异常: {str(e)}"
-            logger.error(result.error_message)
-            return result
+        result.error_message = failure or "协议登录跑完但没拿到 access_token"
+        return result
 
-    def refresh_account(self, account: Account) -> TokenRefreshResult:
+    def _build_sms_callback(self):
+        """登录链可能被打到 add-phone,配了接码就顺手过掉。"""
+        try:
+            from services.sms_service import build_phone_callback, resolve_sms_settings
+        except Exception:
+            return None
+
+        settings = resolve_sms_settings(self.extra_config)
+        return build_phone_callback(
+            settings,
+            log_fn=lambda message: self.log(f"[刷新Token][接码] {message}"),
+            proxy=self.proxy_url,
+        )
+
+    def _login_env_overrides(self) -> dict:
+        """协议登录的开关:要 AT 也要 RT,顺手把 RT 一起换回来。"""
+        merged = {
+            # 已有账号登录,别让协议层把"这邮箱已注册"当失败
+            "WEBUI_ALLOW_LOGIN": "1",
+            # 刷新场景一轮里可能要试两次 authorize,默认的"本轮只试一次"会吞掉第二次
+            "OAUTH_CODEX_RT_EXCHANGE": "1",
+            "OAUTH_CODEX_RT_ALLOW_RETRY": "1",
+        }
+        merged["OTP_TIMEOUT"] = str(self._otp_timeout())
+        for config_key, env_key in (
+            ("sms_per_phone_timeout", "OPENAI_PHONE_OTP_TIMEOUT"),
+            ("sms_max_phone_attempts", "OPENAI_PHONE_MAX_ATTEMPTS"),
+            ("sms_code_retries_per_phone", "OPENAI_PHONE_OTP_CODE_RETRIES"),
+            ("chatgpt_phone_number", "OPENAI_PHONE_NUMBER"),
+        ):
+            value = str(self.extra_config.get(config_key) or "").strip()
+            if value:
+                merged[env_key] = value
+        return merged
+
+    def _otp_timeout(self) -> int:
+        for key in ("mailbox_otp_timeout_seconds", "email_otp_timeout_seconds", "otp_timeout"):
+            try:
+                seconds = int(str(self.extra_config.get(key) or "").strip())
+            except ValueError:
+                continue
+            if seconds > 0:
+                return seconds
+        return 180
+
+    # ── 编排 ──
+
+    def refresh_account(self, account) -> TokenRefreshResult:
         """
-        刷新账号的 Token
+        刷新账号的 Token。
 
-        优先级：
-        1. Session Token 刷新
-        2. OAuth Refresh Token 刷新
+        优先级:
+        1. OAuth Refresh Token 刷新(最快,能顺带换新 RT)
+        2. Session Token 刷新(只出 AT)
+        3. 邮箱 + 密码协议登录(兜底,产出最全但最慢)
 
         Args:
-            account: 账号对象
+            account: 账号对象,需带 email / password / refresh_token /
+                     session_token / client_id / totp_secret 等字段
 
         Returns:
-            TokenRefreshResult: 刷新结果
+            TokenRefreshResult: 刷新结果,``success`` 表示拿到了新的 access_token
         """
-        # 优先尝试 Session Token
-        if account.session_token:
-            logger.info(f"尝试使用 Session Token 刷新账号 {account.email}")
-            result = self.refresh_by_session_token(account.session_token)
-            if result.success:
-                return result
-            logger.warning(f"Session Token 刷新失败，尝试 OAuth 刷新")
+        email = str(getattr(account, "email", "") or "")
+        final = TokenRefreshResult(success=False)
 
-        # 尝试 OAuth Refresh Token
-        if account.refresh_token:
-            logger.info(f"尝试使用 OAuth Refresh Token 刷新账号 {account.email}")
-            result = self.refresh_by_oauth_token(
-                refresh_token=account.refresh_token,
-                client_id=account.client_id
+        def _absorb(partial: TokenRefreshResult) -> None:
+            """把某条策略拿到的凭证并进最终结果,只覆盖非空值。
+
+            前一条策略可能已经刷出了 session_token,后一条失败返回的空值
+            不该把它抹掉。
+            """
+            for attr in ("access_token", "refresh_token", "session_token", "id_token", "cookie_header"):
+                value = str(getattr(partial, attr, "") or "").strip()
+                if value:
+                    setattr(final, attr, value)
+            if partial.expires_at:
+                final.expires_at = partial.expires_at
+
+        refresh_token = str(getattr(account, "refresh_token", "") or "").strip()
+        session_token = str(getattr(account, "session_token", "") or "").strip()
+        password = str(getattr(account, "password", "") or "").strip()
+        totp_secret = str(getattr(account, "totp_secret", "") or "").strip()
+
+        # ① RT 刷新
+        if refresh_token:
+            self.log(f"[刷新Token] 尝试 RT 刷新: {email}")
+            partial = self.refresh_by_oauth_token(
+                refresh_token=refresh_token,
+                client_id=getattr(account, "client_id", None),
             )
-            return result
+            _absorb(partial)
+            if partial.success:
+                final.success = True
+                final.strategy = STRATEGY_REFRESH_TOKEN
+                final.attempts.append(RefreshAttempt(STRATEGY_REFRESH_TOKEN, True, "拿到 access_token"))
+                self.log(f"[刷新Token] RT 刷新成功: {email}")
+                return final
+            final.attempts.append(
+                RefreshAttempt(STRATEGY_REFRESH_TOKEN, False, partial.error_message)
+            )
+            self.log(f"[刷新Token] RT 刷新未果: {partial.error_message}")
+        else:
+            final.attempts.append(
+                RefreshAttempt(STRATEGY_REFRESH_TOKEN, False, "库里没有 refresh_token，跳过")
+            )
 
-        # 无可用刷新方式
-        return TokenRefreshResult(
-            success=False,
-            error_message="账号没有可用的刷新方式（缺少 session_token 和 refresh_token）"
+        # ② Session 刷新
+        if session_token:
+            self.log(f"[刷新Token] 尝试 Session 刷新: {email}")
+            partial = self.refresh_by_session_token(session_token)
+            _absorb(partial)
+            if partial.success:
+                final.success = True
+                final.strategy = STRATEGY_SESSION
+                final.attempts.append(RefreshAttempt(STRATEGY_SESSION, True, "拿到 access_token"))
+                self.log(f"[刷新Token] Session 刷新成功: {email}")
+                return final
+            final.attempts.append(RefreshAttempt(STRATEGY_SESSION, False, partial.error_message))
+            self.log(f"[刷新Token] Session 刷新未果: {partial.error_message}")
+        else:
+            final.attempts.append(
+                RefreshAttempt(STRATEGY_SESSION, False, "库里没有 session_token，跳过")
+            )
+
+        # ③ 协议登录兜底
+        if not self.allow_login:
+            final.attempts.append(RefreshAttempt(STRATEGY_LOGIN, False, "已关闭协议登录兜底"))
+        elif not password:
+            final.attempts.append(RefreshAttempt(STRATEGY_LOGIN, False, "库里没有密码，无法协议登录"))
+        else:
+            self.log(f"[刷新Token] 前两条路不通，改走协议登录: {email}")
+            partial = self.refresh_by_login(email, password, totp_secret=totp_secret)
+            _absorb(partial)
+            if partial.success:
+                final.success = True
+                final.strategy = STRATEGY_LOGIN
+                final.attempts.append(RefreshAttempt(STRATEGY_LOGIN, True, "拿到 access_token"))
+                self.log(f"[刷新Token] 协议登录成功: {email}")
+                return final
+            final.attempts.append(RefreshAttempt(STRATEGY_LOGIN, False, partial.error_message))
+            self.log(f"[刷新Token] 协议登录未果: {partial.error_message}")
+
+        details = "；".join(
+            f"{strategy_label(item.strategy)}：{item.message}"
+            for item in final.attempts
+            if not item.ok
         )
+        final.error_message = f"Token 刷新失败（{details}）" if details else "Token 刷新失败"
+        return final
 
     def validate_token(self, access_token: str) -> Tuple[bool, Optional[str]]:
         """
@@ -276,63 +542,3 @@ class TokenRefreshManager:
 
         except Exception as e:
             return False, f"验证异常: {str(e)}"
-
-
-def refresh_account_token(account_id: int, proxy_url: Optional[str] = None) -> TokenRefreshResult:
-    """
-    刷新指定账号的 Token 并更新数据库
-
-    Args:
-        account_id: 账号 ID
-        proxy_url: 代理 URL
-
-    Returns:
-        TokenRefreshResult: 刷新结果
-    """
-    with get_db() as db:
-        account = crud.get_account_by_id(db, account_id)
-        if not account:
-            return TokenRefreshResult(success=False, error_message="账号不存在")
-
-        manager = TokenRefreshManager(proxy_url=proxy_url)
-        result = manager.refresh_account(account)
-
-        if result.success:
-            # 更新数据库
-            update_data = {
-                "access_token": result.access_token,
-                "last_refresh": datetime.utcnow()
-            }
-
-            if result.refresh_token:
-                update_data["refresh_token"] = result.refresh_token
-
-            if result.expires_at:
-                update_data["expires_at"] = result.expires_at
-
-            crud.update_account(db, account_id, **update_data)
-
-        return result
-
-
-def validate_account_token(account_id: int, proxy_url: Optional[str] = None) -> Tuple[bool, Optional[str]]:
-    """
-    验证指定账号的 Token 是否有效
-
-    Args:
-        account_id: 账号 ID
-        proxy_url: 代理 URL
-
-    Returns:
-        Tuple[bool, Optional[str]]: (是否有效, 错误信息)
-    """
-    with get_db() as db:
-        account = crud.get_account_by_id(db, account_id)
-        if not account:
-            return False, "账号不存在"
-
-        if not account.access_token:
-            return False, "账号没有 access_token"
-
-        manager = TokenRefreshManager(proxy_url=proxy_url)
-        return manager.validate_token(account.access_token)

@@ -107,6 +107,27 @@ class Bind2faTaskRequest(BaseModel):
     proxy: Optional[str] = None
 
 
+class RefreshTokenTaskRequest(BaseModel):
+    """批量刷新 Token 的任务参数。
+
+    和补 RT 一样默认串行 + 间隔几秒：RT 刷新本身很轻，但兜底那条协议登录会
+    连着打 OpenAI 的登录链，并发拉满等于主动送风控素材。
+    """
+
+    account_ids: list[int] = Field(default_factory=list)
+    all_filtered: bool = False
+    email: str = ""
+    status: str = ""
+    plus_status: str = ""
+    # 三条路都没材料的号（没 RT、没 session、也没密码）跑了必然失败，默认剔掉
+    only_refreshable: bool = True
+    # 关掉就只试 RT 与 Session 两条快路径，不走协议登录
+    allow_login: bool = True
+    concurrency: int = 1
+    delay_seconds: float = 5
+    proxy: Optional[str] = None
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -1052,6 +1073,114 @@ def _run_bind_2fa(task_id: str, account_ids: list[int], req: Bind2faTaskRequest)
         proxy=req.proxy,
         handle_account=_handle,
     )
+
+
+def _run_refresh_token(task_id: str, account_ids: list[int], req: RefreshTokenTaskRequest):
+    """批量刷新 Token。和补 RT 同一套调度，区别只在每个号跑什么。"""
+    from core.config_store import config_store
+    from core.db import AccountModel
+    from services.chatgpt_token_refresh import apply_refresh_result, refresh_account_data
+
+    base_config = config_store.get_all() or {}
+
+    def _handle(*, account_id, fields, proxy, control, attempt_id) -> AttemptResult:
+        email = fields["email"]
+        result = refresh_account_data(
+            email=email,
+            password=fields["password"],
+            extra=fields["extra"],
+            token=fields["token"],
+            config=base_config,
+            proxy=proxy,
+            allow_login=req.allow_login,
+            log_fn=lambda msg: _log(task_id, f"  {msg}"),
+            task_control=control,
+            attempt_id=attempt_id,
+        )
+
+        # 成败都落库：Session 那条路可能只刷出 AT 没换到 RT，协议登录末段报错
+        # 也可能已经把 AT 拿到手，这些都值得存下来。
+        with Session(engine) as s:
+            account = s.get(AccountModel, account_id)
+            if account is not None:
+                apply_refresh_result(account, result, session=s, commit=True)
+
+        if result.success:
+            _log(task_id, f"[OK] {email} {result.summary()}")
+            _save_task_log("chatgpt", email, "success", detail={"action": "refresh_token"})
+            return AttemptResult.success()
+
+        _log(task_id, f"[FAIL] {email} {result.summary()}")
+        _save_task_log(
+            "chatgpt",
+            email,
+            "failed",
+            error=result.summary(),
+            detail={"action": "refresh_token"},
+        )
+        return AttemptResult.failed(f"{email}: {result.summary()}")
+
+    _run_account_batch_task(
+        task_id,
+        account_ids,
+        label="刷新 Token",
+        concurrency=req.concurrency,
+        delay_seconds=req.delay_seconds,
+        proxy=req.proxy,
+        handle_account=_handle,
+    )
+
+
+@router.post("/refresh-token")
+def create_refresh_token_task(req: RefreshTokenTaskRequest, background_tasks: BackgroundTasks):
+    """批量刷新 ChatGPT 账号的 Token（RT → Session → 协议登录）。"""
+    from services.chatgpt_token_refresh import select_refresh_targets
+
+    with Session(engine) as s:
+        try:
+            accounts, missing_ids = select_refresh_targets(
+                s,
+                account_ids=req.account_ids,
+                all_filtered=req.all_filtered,
+                email=req.email,
+                status=req.status,
+                plus_status=req.plus_status,
+                only_refreshable=req.only_refreshable,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        account_ids = [int(row.id) for row in accounts if row.id]
+
+    if not account_ids:
+        if missing_ids:
+            detail = "所选账号不存在"
+        elif req.only_refreshable:
+            detail = "所选账号都没有可用的刷新凭据（缺 RT / Session / 密码）"
+        else:
+            detail = "没有匹配的账号"
+        raise HTTPException(400, detail)
+
+    task_id = f"refresh_token_{int(time.time() * 1000)}"
+    _task_store.create(
+        task_id,
+        platform="chatgpt",
+        total=len(account_ids),
+        source="refresh_token",
+        meta={
+            "kind": "refresh_token",
+            "only_refreshable": req.only_refreshable,
+            "allow_login": req.allow_login,
+            "concurrency": req.concurrency,
+            "delay_seconds": req.delay_seconds,
+            "missing_ids": missing_ids,
+        },
+    )
+    _persist_task_snapshot(task_id)
+    _log(task_id, f"待刷新 Token 账号 {len(account_ids)} 个")
+    if missing_ids:
+        _log(task_id, f"忽略不存在的账号: {missing_ids}")
+    background_tasks.add_task(_run_refresh_token, task_id, account_ids, req)
+    return {"task_id": task_id, "total": len(account_ids), "missing_ids": missing_ids}
 
 
 @router.post("/backfill-rt")

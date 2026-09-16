@@ -12,12 +12,13 @@ interface TaskLogPanelProps {
   operation?: 'link' | 'pay'
 }
 
-export type TaskKind = 'register' | 'backfill_rt' | 'bind_2fa' | 'payment'
+export type TaskKind = 'register' | 'backfill_rt' | 'bind_2fa' | 'refresh_token' | 'payment'
 
 const KIND_TEXT: Record<TaskKind, { success: string; registered: string; total: string; done: string }> = {
   register: { success: '注册成功', registered: '已注册', total: '总共注册', done: '注册完成' },
   backfill_rt: { success: '补 RT 成功', registered: '已处理', total: '总共账号', done: '补 RT 完成' },
   bind_2fa: { success: '绑定成功', registered: '已处理', total: '总共账号', done: '绑定 2FA 完成' },
+  refresh_token: { success: '刷新成功', registered: '已处理', total: '总共账号', done: '刷新 Token 完成' },
   payment: { success: '支付成功', registered: '已处理', total: '总共账号', done: '支付任务完成' },
 }
 

@@ -215,19 +215,24 @@ class ChatGPTPlatform(BasePlatform):
             }
 
         if action_id == "refresh_token":
-            from platforms.chatgpt.token_refresh import TokenRefreshManager
+            from services.chatgpt_token_refresh import build_extra_patch, refresh_account_data
 
-            manager = TokenRefreshManager(proxy_url=proxy)
-            result = manager.refresh_account(a)
-            if result.success:
-                return {
-                    "ok": True,
-                    "data": {
-                        "access_token": result.access_token,
-                        "refresh_token": result.refresh_token,
-                    },
-                }
-            return {"ok": False, "error": result.error_message}
+            result = refresh_account_data(
+                email=account.email,
+                password=account.password,
+                extra=extra,
+                token=account.token,
+                config=(self.config.extra or {}) if self.config else {},
+                proxy=proxy,
+                allow_login=str(params.get("allow_login", "1")).lower() not in ("0", "false", "no"),
+                log_fn=getattr(self, "_log_fn", None),
+            )
+            return {
+                "ok": result.success,
+                "data": {"message": result.summary(), "strategy": result.strategy},
+                "error": "" if result.success else result.summary(),
+                "account_extra_patch": build_extra_patch(result),
+            }
 
         if action_id == "backfill_refresh_token":
             from services.chatgpt_rt_backfill import backfill_account_data, build_extra_patch

@@ -80,6 +80,11 @@ const TASK_BACKED_ACTIONS: Record<
     kind: 'bind_2fa',
     body: (accountId) => ({ account_ids: [accountId], only_missing_2fa: false, delay_seconds: 0 }),
   },
+  refresh_token: {
+    endpoint: '/tasks/refresh-token',
+    kind: 'refresh_token',
+    body: (accountId) => ({ account_ids: [accountId], only_refreshable: false, delay_seconds: 0 }),
+  },
 }
 
 function parseExtraJson(raw: string | undefined) {
@@ -762,6 +767,10 @@ export default function Accounts() {
     'probe_selected' | 'probe_all' | 'remote_selected' | 'remote_all' | 'plus_selected' | 'plus_all' | ''
   >('')
   const [backfillRtModalOpen, setBackfillRtModalOpen] = useState(false)
+  const [refreshTokenModalOpen, setRefreshTokenModalOpen] = useState(false)
+  const [refreshTokenLoading, setRefreshTokenLoading] = useState(false)
+  const [refreshTokenTaskId, setRefreshTokenTaskId] = useState<string | null>(null)
+  const [refreshTokenForm] = Form.useForm()
   const [backfillRtLoading, setBackfillRtLoading] = useState(false)
   const [backfillRtTaskId, setBackfillRtTaskId] = useState<string | null>(null)
   const [backfillRtForm] = Form.useForm()
@@ -1170,6 +1179,49 @@ export default function Accounts() {
     backfillRtForm.resetFields()
   }
 
+  const handleRefreshToken = async () => {
+    const values = await refreshTokenForm.validateFields()
+    const scope = selectedRowKeys.length > 0 ? 'selected' : 'all'
+
+    const body: Record<string, unknown> = {
+      only_refreshable: values.only_refreshable !== false,
+      allow_login: values.allow_login !== false,
+      concurrency: Number(values.concurrency) || 1,
+      delay_seconds: Number(values.delay_seconds) || 0,
+    }
+
+    if (scope === 'selected') {
+      body.account_ids = Array.from(selectedRowKeys)
+        .map((value) => Number(value))
+        .filter((value) => Number.isInteger(value) && value > 0)
+    } else {
+      body.all_filtered = true
+      if (search) body.email = search
+      if (filterStatus) body.status = filterStatus
+      if (filterPlusStatus) body.plus_status = filterPlusStatus
+    }
+
+    setRefreshTokenLoading(true)
+    try {
+      const result = await apiFetch('/tasks/refresh-token', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      })
+      setRefreshTokenTaskId(result.task_id)
+      message.success(`已开始为 ${result.total} 个账号刷新 Token`)
+    } catch (e) {
+      message.error(`刷新 Token 启动失败: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setRefreshTokenLoading(false)
+    }
+  }
+
+  const closeRefreshTokenModal = () => {
+    setRefreshTokenModalOpen(false)
+    setRefreshTokenTaskId(null)
+    refreshTokenForm.resetFields()
+  }
+
   const getStatusSyncScope = (): 'selected' | 'all' => (selectedRowKeys.length > 0 ? 'selected' : 'all')
 
   const getUploadCpaScope = (): 'selected' | 'all' => (selectedRowKeys.length > 0 ? 'selected' : 'all')
@@ -1544,6 +1596,15 @@ export default function Accounts() {
           )}
           {currentPlatform === 'chatgpt' && (
             <Button
+              icon={<ReloadOutlined />}
+              onClick={() => setRefreshTokenModalOpen(true)}
+              disabled={total === 0}
+            >
+              {selectedRowKeys.length > 0 ? `刷新 Token (${selectedRowKeys.length})` : '刷新 Token'}
+            </Button>
+          )}
+          {currentPlatform === 'chatgpt' && (
+            <Button
               icon={<KeyOutlined />}
               onClick={() => setBackfillRtModalOpen(true)}
               disabled={total === 0}
@@ -1736,6 +1797,69 @@ export default function Accounts() {
           </>
         ) : (
           <TaskLogPanel taskId={backfillRtTaskId} kind="backfill_rt" onDone={() => { load() }} />
+        )}
+      </Modal>
+
+      <Modal
+        title="批量刷新 Token"
+        open={refreshTokenModalOpen}
+        onCancel={closeRefreshTokenModal}
+        footer={null}
+        width={refreshTokenTaskId ? 720 : 520}
+        maskClosable={false}
+      >
+        {!refreshTokenTaskId ? (
+          <>
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message={
+                selectedRowKeys.length > 0
+                  ? `处理所选 ${selectedRowKeys.length} 个账号`
+                  : `处理当前筛选的 ${total} 个账号`
+              }
+              description="按代价从低到高试：先用 refresh_token 换新的 access_token，不行再用 session_token 换；两条都没有或都失效时，用邮箱密码走一遍协议登录（库里存了 2FA 密钥会自动算码），可能需要收一封验证码。刷到的 Token 会直接写回账号。"
+            />
+            <Form form={refreshTokenForm} layout="vertical" onFinish={handleRefreshToken}>
+              <Form.Item
+                name="only_refreshable"
+                label="跳过没有刷新凭据的账号"
+                initialValue={true}
+                valuePropName="checked"
+                extra="没有 RT、没有 Session、也没有密码的账号跑了必然失败，默认剔掉"
+              >
+                <Switch />
+              </Form.Item>
+              <Form.Item
+                name="allow_login"
+                label="前两条路都失效时用邮箱密码登录"
+                initialValue={true}
+                valuePropName="checked"
+                extra="关掉则只试 RT 与 Session 两条快路径，快但拿不到就放弃"
+              >
+                <Switch />
+              </Form.Item>
+              <Form.Item name="concurrency" label="并发数" initialValue={1}>
+                <InputNumber min={1} max={10} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item
+                name="delay_seconds"
+                label="每个账号间隔(秒)"
+                initialValue={5}
+                extra="走到协议登录时会连续打 OpenAI 登录链，建议留几秒"
+              >
+                <InputNumber min={0} precision={1} step={1} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item>
+                <Button type="primary" htmlType="submit" block loading={refreshTokenLoading}>
+                  开始刷新 Token
+                </Button>
+              </Form.Item>
+            </Form>
+          </>
+        ) : (
+          <TaskLogPanel taskId={refreshTokenTaskId} kind="refresh_token" onDone={() => { load() }} />
         )}
       </Modal>
 
