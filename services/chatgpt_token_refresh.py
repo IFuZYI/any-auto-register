@@ -37,11 +37,12 @@ DEFAULT_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 def account_can_refresh(model: AccountModel) -> bool:
     """这个号有没有任何一条可用的刷新路径。
 
-    两条路只要有一条有材料就算可刷：RT、或者邮箱 + 密码。
-    （session_token 已不参与刷新编排，只有它一个的号刷不动。）
+    几条路只要有一条有材料就算可刷：RT、session_token、或者邮箱 + 密码。
     """
     extra = model.get_extra()
     if str(extra.get("refresh_token") or extra.get("refreshToken") or "").strip():
+        return True
+    if str(extra.get("session_token") or extra.get("sessionToken") or "").strip():
         return True
     return bool(str(model.email or "").strip() and str(model.password or "").strip())
 
@@ -58,8 +59,8 @@ def select_refresh_targets(
 ) -> tuple[list[AccountModel], list[int]]:
     """挑出要刷新 Token 的号，返回 ``(账号列表, 找不到的 id)``。
 
-    ``only_refreshable`` 默认开着：两条路都没材料的号（没 RT、也没密码）
-    跑了必然失败，没必要占着任务队列。
+    ``only_refreshable`` 默认开着：几条路都没材料的号（没 RT、没 session、
+    也没密码）跑了必然失败，没必要占着任务队列。
     """
     return select_chatgpt_accounts(
         session,
@@ -100,9 +101,9 @@ def refresh_account_data(
     def _resolve_mail_provider():
         """惰性解析收件通道，只在真要走协议登录那一刻才连邮箱。
 
-        RT 能成的话根本用不上邮箱，没必要为了一个大概率不跑的分支先连一遍收件
-        服务；但 RT 失效降级到协议登录那一刻，又必须拿得到通道 —— 所以交出去的
-        是工厂，不是现成的 provider。
+        RT/Session 能成的话根本用不上邮箱，没必要为了一个大概率不跑的分支先连
+        一遍收件服务；但 Session 换新被打回 /log-in、或降级到协议登录那一刻，
+        又必须拿得到通道 —— 所以交出去的是工厂，不是现成的 provider。
         """
         from services.chatgpt_otp_mailbox import resolve_otp_mail_provider
 
@@ -126,6 +127,7 @@ def refresh_account_data(
     account.refresh_token = str(extra.get("refresh_token") or extra.get("refreshToken") or "")
     account.session_token = str(extra.get("session_token") or extra.get("sessionToken") or "")
     account.id_token = str(extra.get("id_token") or "")
+    account.device_id = str(extra.get("device_id") or "")
     account.client_id = str(extra.get("client_id") or DEFAULT_CLIENT_ID)
     account.totp_secret = str(extra.get("totp_secret") or "")
 
@@ -133,7 +135,7 @@ def refresh_account_data(
         proxy_url=proxy,
         extra_config=config,
         # 只要还有可能走到协议登录，就把收件通道的解析权交出去（惰性，
-        # RT 成功时一次都不会调用）
+        # RT/Session 成功时一次都不会调用）
         mail_provider_resolver=(
             _resolve_mail_provider if (allow_login and password) else None
         ),

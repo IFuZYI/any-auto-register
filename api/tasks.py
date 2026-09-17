@@ -119,9 +119,9 @@ class RefreshTokenTaskRequest(BaseModel):
     email: str = ""
     status: str = ""
     plus_status: str = ""
-    # 两条路都没材料的号（没 RT、也没密码）跑了必然失败，默认剔掉
+    # 几条路都没材料的号（没 RT、没 session、也没密码）跑了必然失败，默认剔掉
     only_refreshable: bool = True
-    # 关掉就只试 RT 快路径，不走协议登录
+    # 关掉就只试 RT 与 Session 两条快路径，不走协议登录
     allow_login: bool = True
     concurrency: int = 1
     delay_seconds: float = 5
@@ -1098,7 +1098,8 @@ def _run_refresh_token(task_id: str, account_ids: list[int], req: RefreshTokenTa
             attempt_id=attempt_id,
         )
 
-        # 成败都落库：协议登录末段报错也可能已经把 AT 拿到手，这些值得存下来。
+        # 成败都落库：Session 那条路可能只刷出 AT 没换到 RT，协议登录末段报错
+        # 也可能已经把 AT 拿到手，这些都值得存下来。
         with Session(engine) as s:
             account = s.get(AccountModel, account_id)
             if account is not None:
@@ -1132,7 +1133,7 @@ def _run_refresh_token(task_id: str, account_ids: list[int], req: RefreshTokenTa
 
 @router.post("/refresh-token")
 def create_refresh_token_task(req: RefreshTokenTaskRequest, background_tasks: BackgroundTasks):
-    """批量刷新 ChatGPT 账号的 Token（RT → 协议登录）。"""
+    """批量刷新 ChatGPT 账号的 Token（RT → Session → 协议登录）。"""
     from services.chatgpt_token_refresh import select_refresh_targets
 
     with Session(engine) as s:
@@ -1154,7 +1155,7 @@ def create_refresh_token_task(req: RefreshTokenTaskRequest, background_tasks: Ba
         if missing_ids:
             detail = "所选账号不存在"
         elif req.only_refreshable:
-            detail = "所选账号都没有可用的刷新凭据（缺 RT / 密码）"
+            detail = "所选账号都没有可用的刷新凭据（缺 RT / Session / 密码）"
         else:
             detail = "没有匹配的账号"
         raise HTTPException(400, detail)

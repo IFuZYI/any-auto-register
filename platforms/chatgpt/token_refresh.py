@@ -1,23 +1,31 @@
 """Token 刷新模块
 
-按代价从低到高排两条路,第一条成了就不往下走:
+按代价从低到高排几条路,第一条成了就不往下走:
 
     ① RT 刷新(``refresh_by_oauth_token``):拿 refresh_token 走 OAuth
        ``/oauth/token``。一次 POST 就完事,不碰风控,而且能顺带换回新的 RT。
 
-    ② 协议登录(``refresh_by_login``):RT 为空或已失效时的兜底。邮箱 + 密码
+    ② Session 回放(``refresh_by_session_token``):RT 没有或已失效时先试。
+       拿 session_token 打 ``/api/auth/session``,把会话 cookie 里嵌着的 AT
+       捞出来。只出 AT,不出 RT;而且这个端点只是"回放",自己不会去找 OpenAI
+       换新的,所以拿到结果必须验货 —— AT 与刷新前相同、或被 ``/backend-api/me``
+       明确拒绝,都判这条失败,继续往下走。
+
+    ③ Session 换新(``refresh_by_session_exchange``):回放没捞到新 AT 时接着试。
+       拿同一份 session_token 恢复登录态,再跑一遍 Codex OAuth 授权链,直接换回
+       **全新**的 AT + RT(顺带刷新 cookie)。要跟随授权链、十几秒,但比协议登录
+       便宜:不碰密码页,正常也不需要邮箱验证码。
+
+    ④ 协议登录(``refresh_by_login``):前面都没材料或都失败时的兜底。邮箱 + 密码
        重跑一遍协议登录链,库里有 TOTP 密钥就自动算码过 2FA。这条路要几十秒、
        可能要邮箱验证码,但产出最全(AT + RT + session)。
 
-两条路都以「拿到新的 access_token」为最低目标 —— 这是本模块存在的意义,
+几条路都以「拿到新的 access_token」为最低目标 —— 这是本模块存在的意义,
 顺带换到的 RT / session_token 一并带回,由调用方决定落库哪些。
 
-关于 session_token:``refresh_by_session_token`` 与配套的 ``_probe_access_token``
-仍然保留,但**已退出刷新编排**。``/api/auth/session`` 只是把会话 cookie 里
-已经嵌着的 AT 回放出来,它自己不会去找 OpenAI 换新的 —— 拿到 200 也说明不了
-凭证是新的,得靠比对旧值 + ``/backend-api/me`` 验货兜底,会话已失效时更是直接
-403。既然走一遍登录链能稳稳拿到全套新凭证,就没必要再留着这条既慢又不可信的
-中间路径。保留代码是给需要单点调用它的场景备用。
+为什么 ② 和 ③ 要分开:②一次请求就能出结果,成了最省事;但它对"会话里没有新
+凭证"的号必然失败(实测这类号还不少),这时 ③ 拿同一份 cookie 真去走一遍授权链
+才有新凭证。③ 的产出和 ④ 一样是全套,却不用邮箱密码,所以必须排在 ④ 前面。
 """
 
 from __future__ import annotations
@@ -34,14 +42,15 @@ from platforms.chatgpt.protocol.response_summary import describe_error
 logger = logging.getLogger(__name__)
 
 # 策略标识,落库留痕与前端展示都用这套
-# (STRATEGY_SESSION 已不在编排里,保留给备用的 refresh_by_session_token 留痕)
 STRATEGY_REFRESH_TOKEN = "refresh_token"
 STRATEGY_SESSION = "session"
+STRATEGY_SESSION_EXCHANGE = "session_exchange"
 STRATEGY_LOGIN = "login"
 
 _STRATEGY_LABELS = {
     STRATEGY_REFRESH_TOKEN: "RT 刷新",
     STRATEGY_SESSION: "Session 刷新",
+    STRATEGY_SESSION_EXCHANGE: "Session 换新",
     STRATEGY_LOGIN: "协议登录",
 }
 
@@ -92,7 +101,7 @@ class TokenRefreshResult:
 class TokenRefreshManager:
     """Token 刷新管理器。
 
-    优先级:RT 刷新 → 协议登录兜底。
+    优先级:RT 刷新 → Session 回放 → Session 换新 → 协议登录兜底。
     """
 
     # OpenAI OAuth 端点
@@ -117,9 +126,10 @@ class TokenRefreshManager:
             mail_provider: 邮箱注入点,协议登录撞上邮箱验证码时用
             mail_unavailable_reason: 读不到收件箱时的原因,用于拼人话报错
             mail_provider_resolver: 惰性邮箱工厂,返回 ``(provider, 失败原因)``。
-                只有真要走协议登录时才会被调用一次 —— RT 快路径压根用不上收件箱,
-                不该为了一个大概率不跑的分支先去连一遍邮箱服务;而 RT 失效降级到
-                协议登录那一刻,又必须拿得到通道,所以只能靠惰性解析同时满足这两头。
+                只有真要走协议登录时才会被调用一次 —— 快路径(RT/Session)压根
+                用不上收件箱,不该为了一个大概率不跑的分支先去连一遍邮箱服务;
+                而 Session 换新那条路被打回 /log-in、或干脆降级到协议登录那一刻,
+                又必须拿得到通道,所以只能靠惰性解析同时满足这两头。
             allow_login: 关掉就不走协议登录兜底
             log_fn: 日志回调,后台任务用它把过程实时推给前端
         """
@@ -244,7 +254,7 @@ class TokenRefreshManager:
             logger.error(result.error_message)
             return result
 
-    # ── 备用策略:Session Token(已不在编排里) ──
+    # ── 策略二:Session 回放 ──
 
     def refresh_by_session_token(
         self,
@@ -255,10 +265,7 @@ class TokenRefreshManager:
         """
         使用 Session Token 刷新(只出 AT,不出 RT)
 
-        **注意:这条策略已不在 ``refresh_account`` 的编排里**,保留仅供单点
-        调用备用。调用方需自己承担下面这套验货成本,否则很容易把旧 AT 当新
-        凭证收下。
-
+        这是编排里最便宜的一条(一个请求),但也是最不可信的一条:
         ``/api/auth/session`` 只是把 NextAuth 会话 cookie 里已经嵌着的 AT 回放
         出来,它自己不会去找 OpenAI 换新的 —— 会话里的 AT 早就过期或被作废时,
         这个接口照样返回 200 和一个**与刷新前一模一样**的旧 AT。所以"HTTP 200
@@ -356,7 +363,172 @@ class TokenRefreshManager:
             logger.error(result.error_message)
             return result
 
-    # ── 策略二:协议登录兜底 ──
+    # ── 策略三:Session 换新(拿 session_token 走一遍授权链) ──
+
+    def refresh_by_session_exchange(
+        self,
+        session_token: str,
+        *,
+        access_token: str = "",
+        device_id: str = "",
+        email: str = "",
+        password: str = "",
+        totp_secret: str = "",
+        previous_access_token: str = "",
+    ) -> TokenRefreshResult:
+        """拿 session_token 恢复登录态,跑一遍 Codex OAuth 授权链换**全新** AT + RT。
+
+        和策略二的区别:``/api/auth/session`` 只回放 cookie 里嵌着的旧 AT,这条是
+        真去 ``auth.openai.com`` 走一遍 ``oauth/authorize`` → ``oauth/token``,换回来
+        的 AT / RT 都是新签发的,顺带还会刷新 cookie(``oai-did`` 一并落库)。
+
+        比协议登录便宜的地方:不碰密码页、不重新发邮件,正常几秒到十几秒就完事。
+        代价是授权链被打回 ``/log-in`` 时协议层会顺手补一次登录 —— 这一步可能要
+        密码、TOTP 或邮箱验证码,所以密码 / 收件通道有就传,没有也值得试一把。
+
+        Args:
+            session_token: 库里的会话令牌(恢复登录态用)
+            access_token: 库里的 AT,授权链缺 cookie 时兜底
+            device_id: 库里的 ``oai-did``;缺失时按 email 派生,保证设备身份稳定
+            email / password / totp_secret: 授权链被 /log-in 打回时的补登材料
+            previous_access_token: 刷新前的 AT,用来判断有没有真换新
+
+        Returns:
+            TokenRefreshResult: 刷新结果
+        """
+        result = TokenRefreshResult(success=False, strategy=STRATEGY_SESSION_EXCHANGE)
+
+        if not session_token:
+            result.error_message = "Session 换新失败: 库里没有 session_token"
+            return result
+
+        flow: Optional[AuthFlow] = None
+        exchanged = False
+        failure = ""
+        try:
+            from platforms.chatgpt.protocol import AuthFlow, Config
+            from platforms.chatgpt.protocol_log_relay import mirror_protocol_logs
+            from platforms.chatgpt.rt_backfill import MailboxUnavailableProvider
+
+            flow = AuthFlow(
+                Config(proxy=self.proxy_url),
+                sms_callback=self._build_sms_callback(),
+                env_overrides=self._session_exchange_env_overrides(),
+                account_callback=lambda _email: {
+                    "password": password,
+                    "totp_secret": totp_secret,
+                },
+            )
+            if email:
+                flow.result.email = email
+            if password:
+                flow.result.password = password
+            if totp_secret:
+                flow.result.totp_secret = totp_secret
+            flow.result.device_id = device_id or self._derive_device_id(email)
+
+            with mirror_protocol_logs(self._log_fn):
+                flow.from_existing_credentials(
+                    session_token, access_token, flow.result.device_id
+                )
+                if not (flow.result.access_token or flow.result.session_token):
+                    raise RuntimeError("库里的 session_token 已失效")
+                # 授权链被打回 /log-in 时协议层会自己补一次登录,届时可能要邮箱验证码;
+                # 解析不到通道就交给 MailboxUnavailableProvider,真要码时报一句人话
+                provider = self._resolve_mail_provider() or MailboxUnavailableProvider(
+                    email, self.mail_unavailable_reason
+                )
+                exchanged = bool(flow.oauth_codex_rt_exchange(mail_provider=provider))
+        except Exception as exc:
+            # 中断请求(手动停止/跳过)必须原样抛出去,不能当成"这条策略失败了"
+            from core.task_runtime import TaskInterruption
+
+            if isinstance(exc, TaskInterruption):
+                raise
+            failure = str(exc) or exc.__class__.__name__
+            logger.warning(f"Session 换新报错: {failure}")
+
+        # 即便末段抛异常,已经到手的凭证也不该扔掉 —— AT / RT 是链路中段换到的
+        if flow is not None:
+            auth = flow.result
+            for attr in ("access_token", "refresh_token", "session_token", "id_token", "cookie_header"):
+                value = str(getattr(auth, attr, "") or "").strip()
+                if value:
+                    setattr(result, attr, value)
+
+        access_token_new = str(result.access_token or "").strip()
+        if access_token_new and access_token_new == str(previous_access_token or "").strip():
+            result.success = False
+            result.access_token = ""
+            result.error_message = (
+                "Session 换新失败: 换回的 access_token 与刷新前相同，授权链没换出新凭证"
+            )
+            return result
+
+        if access_token_new:
+            if not exchanged:
+                # 授权链没换出 code,手上这张 AT 只可能是会话回放出来的 —— 跟策略二
+                # 一样得验货,不能凭"它和刷新前不一样"就当成新凭证
+                verdict, detail = self._probe_access_token(access_token_new)
+                if verdict == "invalid":
+                    result.success = False
+                    result.access_token = ""
+                    result.error_message = (
+                        f"Session 换新失败: 会话回放的 access_token 校验未通过（{detail}）"
+                    )
+                    return result
+            result.success = True
+            if failure:
+                logger.info(f"Session 换新末段报错但 AT 已到手: {failure}")
+            return result
+
+        result.error_message = failure or "Session 换新跑完但没拿到 access_token"
+        return result
+
+    def _session_exchange_env_overrides(self) -> dict:
+        """授权链的开关:复用已有会话,别自己撞回登录页。
+
+        ``OAUTH_CODEX_PROMPT`` 必须清掉:Codex authorize 默认带 ``prompt=login``,
+        含义正是"忽略现有会话、重走登录页" —— 不清掉这条策略就白跑了(补 RT 的
+        会话复用踩过同一个坑,见 ``platforms/chatgpt/rt_backfill.py``)。
+        """
+        merged = {
+            "OAUTH_CODEX_PROMPT": "",
+            "OAUTH_CODEX_RT_EXCHANGE": "1",
+            "OAUTH_CODEX_RT_ALLOW_RETRY": "1",
+            "WEBUI_ALLOW_LOGIN": "1",
+        }
+        return self._apply_otp_env(merged)
+
+    def _apply_otp_env(self, merged: dict) -> dict:
+        """等码 / 接码相关的开关:OTP 超时与手工手机号兜底,两条慢路径共用。"""
+        merged["OTP_TIMEOUT"] = str(self._otp_timeout())
+        for config_key, env_key in (
+            ("sms_per_phone_timeout", "OPENAI_PHONE_OTP_TIMEOUT"),
+            ("sms_max_phone_attempts", "OPENAI_PHONE_MAX_ATTEMPTS"),
+            ("sms_code_retries_per_phone", "OPENAI_PHONE_OTP_CODE_RETRIES"),
+            ("chatgpt_phone_number", "OPENAI_PHONE_NUMBER"),
+        ):
+            value = str(self.extra_config.get(config_key) or "").strip()
+            if value:
+                merged[env_key] = value
+        return merged
+
+    @staticmethod
+    def _derive_device_id(email: str) -> str:
+        """库里没有 oai-did 时按邮箱派生一个固定值。
+
+        随机 UUID 意味着每次刷新都是"一台新设备",授权链更容易被打回登录页;
+        同一个号固定用同一个 device,和正常客户端的行为一致。
+        """
+        normalized = str(email or "").strip().lower()
+        if not normalized:
+            return ""
+        import uuid
+
+        return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"chatgpt-token-refresh:{normalized}"))
+
+    # ── 策略四:协议登录兜底 ──
 
     def refresh_by_login(
         self,
@@ -367,8 +539,8 @@ class TokenRefreshManager:
     ) -> TokenRefreshResult:
         """邮箱 + 密码重跑协议登录链拿 AT(纯协议,不开浏览器)。
 
-        RT 没有或已失效时才走这条。库里存了 TOTP 密钥就自动算码过 2FA;
-        OpenAI 要邮箱验证码时靠注入的 ``mail_provider`` 收码。
+        RT / Session 都没有或都失效时才走这条。库里存了 TOTP 密钥就自动算码
+        过 2FA;OpenAI 要邮箱验证码时靠注入的 ``mail_provider`` 收码。
 
         产出最全:AT + RT + session_token 一起带回来。
         """
@@ -454,17 +626,7 @@ class TokenRefreshManager:
             "OAUTH_CODEX_RT_EXCHANGE": "1",
             "OAUTH_CODEX_RT_ALLOW_RETRY": "1",
         }
-        merged["OTP_TIMEOUT"] = str(self._otp_timeout())
-        for config_key, env_key in (
-            ("sms_per_phone_timeout", "OPENAI_PHONE_OTP_TIMEOUT"),
-            ("sms_max_phone_attempts", "OPENAI_PHONE_MAX_ATTEMPTS"),
-            ("sms_code_retries_per_phone", "OPENAI_PHONE_OTP_CODE_RETRIES"),
-            ("chatgpt_phone_number", "OPENAI_PHONE_NUMBER"),
-        ):
-            value = str(self.extra_config.get(config_key) or "").strip()
-            if value:
-                merged[env_key] = value
-        return merged
+        return self._apply_otp_env(merged)
 
     def _otp_timeout(self) -> int:
         for key in ("mailbox_otp_timeout_seconds", "email_otp_timeout_seconds", "otp_timeout"):
@@ -484,13 +646,14 @@ class TokenRefreshManager:
 
         优先级:
         1. OAuth Refresh Token 刷新(最快,能顺带换新 RT)
-        2. 邮箱 + 密码协议登录(兜底,产出最全但最慢)
-
-        Session 刷新(``refresh_by_session_token``)已不参与编排,保留备用。
+        2. Session 回放(拿 session_token 打 /api/auth/session,只出 AT)
+        3. Session 换新(拿 session_token 走 Codex 授权链,换全新 AT + RT)
+        4. 邮箱 + 密码协议登录(兜底,产出最全但最慢)
 
         Args:
             account: 账号对象,需带 email / password / refresh_token /
-                     client_id / totp_secret 等字段
+                     session_token / access_token / device_id / client_id /
+                     totp_secret 等字段
 
         Returns:
             TokenRefreshResult: 刷新结果,``success`` 表示拿到了新的 access_token
@@ -501,7 +664,7 @@ class TokenRefreshManager:
         def _absorb(partial: TokenRefreshResult, *, usable: bool) -> None:
             """把某条策略拿到的凭证并进最终结果,只覆盖非空值。
 
-            一条路拿到的凭证(比如协议登录途中顺带换到的 RT / session_token),
+            前一条路拿到的凭证(比如 Session 换新途中顺带换到的 RT / session_token),
             不该被后面失败返回的空值抹掉。
 
             ``usable=False`` 时不吸收 access_token:失败那条路手里往往正攥着
@@ -522,6 +685,9 @@ class TokenRefreshManager:
                 final.expires_at = partial.expires_at
 
         refresh_token = str(getattr(account, "refresh_token", "") or "").strip()
+        session_token = str(getattr(account, "session_token", "") or "").strip()
+        previous_access_token = str(getattr(account, "access_token", "") or "").strip()
+        device_id = str(getattr(account, "device_id", "") or "").strip()
         password = str(getattr(account, "password", "") or "").strip()
         totp_secret = str(getattr(account, "totp_secret", "") or "").strip()
 
@@ -548,13 +714,59 @@ class TokenRefreshManager:
                 RefreshAttempt(STRATEGY_REFRESH_TOKEN, False, "库里没有 refresh_token，跳过")
             )
 
-        # ② 协议登录兜底
+        # ② Session 回放(一个请求,先捞一把)
+        if session_token:
+            self.log(f"[刷新Token] 尝试 Session 回放: {email}")
+            partial = self.refresh_by_session_token(
+                session_token,
+                previous_access_token=previous_access_token,
+            )
+            _absorb(partial, usable=partial.success)
+            if partial.success:
+                final.success = True
+                final.strategy = STRATEGY_SESSION
+                final.attempts.append(RefreshAttempt(STRATEGY_SESSION, True, "拿到 access_token"))
+                self.log(f"[刷新Token] Session 回放成功: {email}")
+                return final
+            final.attempts.append(RefreshAttempt(STRATEGY_SESSION, False, partial.error_message))
+            self.log(f"[刷新Token] Session 回放未果: {partial.error_message}")
+
+            # ③ 回放不出来就真去走一遍授权链换新的 AT + RT
+            self.log(f"[刷新Token] 改走 Session 换新(授权链): {email}")
+            partial = self.refresh_by_session_exchange(
+                session_token,
+                access_token=previous_access_token,
+                device_id=device_id,
+                email=email,
+                password=password,
+                totp_secret=totp_secret,
+                previous_access_token=previous_access_token,
+            )
+            _absorb(partial, usable=partial.success)
+            if partial.success:
+                final.success = True
+                final.strategy = STRATEGY_SESSION_EXCHANGE
+                final.attempts.append(
+                    RefreshAttempt(STRATEGY_SESSION_EXCHANGE, True, "拿到 access_token")
+                )
+                self.log(f"[刷新Token] Session 换新成功: {email}")
+                return final
+            final.attempts.append(
+                RefreshAttempt(STRATEGY_SESSION_EXCHANGE, False, partial.error_message)
+            )
+            self.log(f"[刷新Token] Session 换新未果: {partial.error_message}")
+        else:
+            final.attempts.append(
+                RefreshAttempt(STRATEGY_SESSION, False, "库里没有 session_token，跳过")
+            )
+
+        # ④ 协议登录兜底
         if not self.allow_login:
             final.attempts.append(RefreshAttempt(STRATEGY_LOGIN, False, "已关闭协议登录兜底"))
         elif not password:
             final.attempts.append(RefreshAttempt(STRATEGY_LOGIN, False, "库里没有密码，无法协议登录"))
         else:
-            self.log(f"[刷新Token] RT 不通，改走协议登录: {email}")
+            self.log(f"[刷新Token] 前几条路不通，改走协议登录: {email}")
             partial = self.refresh_by_login(email, password, totp_secret=totp_secret)
             _absorb(partial, usable=partial.success)
             if partial.success:

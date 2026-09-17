@@ -3543,53 +3543,76 @@ JWT 解析用 `_decode_jwt_payload()`(`platforms/chatgpt/status_probe.py:60`),�
 
 #### 二、Token 刷新(`platforms/chatgpt/token_refresh.py`)
 
-##### 2.1 两条刷新路径
+##### 2.1 四条刷新路径
 
-`TokenRefreshManager`(`platforms/chatgpt/token_refresh.py:92`)持有三个入口,其中两个参与 `refresh_account(account)`(`:481`)的**代价从低到高**编排,第一条成了就不往下走:
+`TokenRefreshManager`(`platforms/chatgpt/token_refresh.py:97`)持有四个入口,统一由 `refresh_account(account)`(`:628`)按**代价从低到高**编排,第一条成了就不往下走:
 
 | 顺序 | 策略 | 方法 | 端点 | 请求 | 取回字段 |
 |---|---|---|---|---|---|
-| ① | RT 刷新 | `refresh_by_oauth_token()` `:169` | `POST https://auth.openai.com/oauth/token` | form-urlencoded:`client_id` / `grant_type=refresh_token` / `refresh_token` / `redirect_uri` | `access_token`、`refresh_token`(缺省沿用旧的)、`expires_in`(默认 3600) |
-| ② | 协议登录 | `refresh_by_login()` `:361` | 与注册同一条协议链(`flow.run_protocol_login`,纯协议不开浏览器) | 邮箱 + 密码;库里存了 `totp_secret` 就自动算码过 2FA,需要邮箱验证码时靠注入的收件通道 | 产出最全:AT + RT + session_token + id_token |
+| ① | RT 刷新 | `refresh_by_oauth_token()` `:179` | `POST https://auth.openai.com/oauth/token` | form-urlencoded:`client_id` / `grant_type=refresh_token` / `refresh_token` / `redirect_uri` | `access_token`、`refresh_token`(缺省沿用旧的)、`expires_in`(默认 3600) |
+| ② | Session 回放 | `refresh_by_session_token()` `:259` | `GET https://chatgpt.com/api/auth/session` | Cookie `__Secure-next-auth.session-token`(domain `.chatgpt.com`),浏览器 UA(Chrome/120) | `accessToken`、`expires`(ISO,`Z`→`+00:00`);**只出 AT,不出 RT** |
+| ③ | Session 换新 | `refresh_by_session_exchange()` `:369` | 与注册同一条授权链(`flow.from_existing_credentials` + `flow.oauth_codex_rt_exchange`) | 库里 `session_token` 恢复登录态 → Codex OAuth 授权链;被打回 `/log-in` 时可能要密码 / TOTP / 邮箱验证码 | **全新** AT + RT + session_token + id_token + cookies |
+| ④ | 协议登录 | `refresh_by_login()` `:503` | `flow.run_protocol_login`(纯协议不开浏览器) | 邮箱 + 密码;库里存了 `totp_secret` 就自动算码过 2FA,需要邮箱验证码时靠注入的收件通道 | 产出最全:AT + RT + session_token + id_token |
 
-`client_id` / `redirect_uri` 默认取 `platforms/chatgpt/constants.py` 的 `OAUTH_CLIENT_ID` / `OAUTH_REDIRECT_URI`(`platforms/chatgpt/token_refresh.py:134-136`),可由入参覆盖。HTTP 会话统一 `cffi_requests.Session(impersonate="chrome120", proxy=…)`,超时 30s。
+`client_id` / `redirect_uri` 默认取 `platforms/chatgpt/constants.py` 的 `OAUTH_CLIENT_ID` / `OAUTH_REDIRECT_URI`(`platforms/chatgpt/token_refresh.py:139-141`),可由入参覆盖。HTTP 会话统一 `cffi_requests.Session(impersonate="chrome120", proxy=…)`,超时 30s。
 
-结果统一为 `TokenRefreshResult`(`platforms/chatgpt/token_refresh.py:63`):`success / access_token / refresh_token / session_token / id_token / cookie_header / expires_at / strategy / attempts / error_message`。**`success` 的唯一含义是"拿到了新的 access_token"**,顺带换到的 RT / session_token 一并带回,由调用方决定落库哪些。
+结果统一为 `TokenRefreshResult`(`platforms/chatgpt/token_refresh.py:68`):`success / access_token / refresh_token / session_token / id_token / cookie_header / expires_at / strategy / attempts / error_message`。**`success` 的唯一含义是"拿到了新的 access_token"**,顺带换到的 RT / session_token 一并带回,由调用方决定落库哪些。
 
-> ⚠️ **Session 刷新(`refresh_by_session_token()` `:249`)已退出编排**,保留备用(见 2.2.1)。
+> 💡 ② 和 ③ 是同一个 `session_token` 的两种用法:②一个请求最快,但只是"回放"cookie 里嵌着的 AT;③拿同一份 cookie 真去走授权链,拿到的才是新凭证。② 失败的号(实测不少)由 ③ 接住,③ 又不用邮箱密码,所以必须排在 ④ 前面。
 
 ##### 2.2 编排与降级
 
-`refresh_account(account)`(`platforms/chatgpt/token_refresh.py:481`)按顺序:
+`refresh_account(account)`(`platforms/chatgpt/token_refresh.py:628`)按顺序:
 
 1. 有 `refresh_token` → ① RT 刷新,成功直接返回;
-2. `allow_login` 为真且库里有密码 → ② 协议登录兜底;
-3. 两条都没材料或都没成 → `success=False`,`error_message` 是各条失败原因的拼接(带 `strategy_label()`)。
+2. 有 `session_token` → ② Session 回放,成功直接返回;失败接着走 ③ Session 换新,成功直接返回;
+3. `allow_login` 为真且库里有密码 → ④ 协议登录兜底;
+4. 几条都没材料或都没成 → `success=False`,`error_message` 是各条失败原因的拼接(带 `strategy_label()`)。
 
-`_absorb(partial, usable=…)`(`:501`)把某条策略的产出并进最终结果,只覆盖非空值;`usable=False` 时**不吸收 access_token** —— 失败的那条路手里往往正攥着一个已被上游作废的 AT,收进来会被 `build_extra_patch` 写回库里,把原先还能用的 AT 一起弄坏。RT / session_token / cookies 无论成败都留下。
+`_absorb(partial, usable=…)`(`:648`)把某条策略的产出并进最终结果,只覆盖非空值;`usable=False` 时**不吸收 access_token** —— 失败的那条路手里往往正攥着一个已被上游作废的 AT,收进来会被 `build_extra_patch` 写回库里,把原先还能用的 AT 一起弄坏。RT / session_token / cookies 无论成败都留下。
 
-##### 2.2.1 Session 刷新为什么被移出编排(方法保留备用)
+##### 2.2.1 Session 回放为什么必须"验货"
 
-`/api/auth/session` 是 NextAuth 的会话端点,它**只把 session cookie 里已经嵌着的 AT 回放出来**,自己不会去找 OpenAI 换新的。会话里的 AT 早过期或被作废时,它照样回 `200` + 一个**与刷新前一模一样**的旧 AT —— 于是"HTTP 200 且有 `accessToken`"这个判据会造出**看得见的假成功**:上层以为号救回来了,库里存的还是那个废 AT。会话本身失效时更是直接 `403`。
+`/api/auth/session` 是 NextAuth 的会话端点,它**只把 session cookie 里已经嵌着的 AT 回放出来**,自己不会去找 OpenAI 换新的。会话里的 AT 早过期或被作废时,它照样回 `200` + 一个**与刷新前一模一样**的旧 AT —— 于是"HTTP 200 且有 `accessToken`"这个判据会造出**看得见的假成功**:上层以为号救回来了,库里存的还是那个废 AT,而且再也不会降级到 ③。
 
-要在它上面做对,只能靠比对旧值 + `/backend-api/me` 实测来"验货",而即使验成功拿到的也只是一张 AT(没有 RT)。既然走一遍协议登录(②)能稳稳拿到 AT + RT + session 全套新凭证,这条既慢又不可信的中间路径就没有留在编排里的价值 —— 它现在是**备用方法**,需要单点调用时可直接用:
+判据(`platforms/chatgpt/token_refresh.py:331-357`):
 
 | 情形 | 处理 |
 |---|---|
-| 换回的 AT 与刷新前相同 | 失败,"会话里没有新凭证"(调用方需自己传 `previous_access_token`) |
+| 换回的 AT 与刷新前相同 | 失败,"会话里没有新凭证",继续降级 ③ |
 | 换回的是新 AT | 拿它打 `GET /backend-api/me` 实测:401/403 → 失败(`invalid`);200 → 成功 |
 | 探测没跑通(网络异常 / 5xx / 429) | **不否定结果**,按成功算,只记一条"有效性未验证"日志 |
 | HTTP != 200 | 失败,`error_message = "Session token 刷新失败: HTTP {code}"` |
 | 200 但没有 `accessToken` | 失败,"未找到 accessToken" |
 | 抛异常 | 失败,"Session token 刷新异常: {e}" |
 
-服务端可能轮换 session cookie,换了就把新的 `__Secure-next-auth.session-token` 一起带回(`:345`)。
+服务端可能轮换 session cookie,换了就把新的 `__Secure-next-auth.session-token` 一起带回(`:351`)。
 
-② 协议登录没有"验货"问题:拿的是刚登录出来的全新凭证,失败就明确失败,不装作成功。
+##### 2.2.2 Session 换新:拿同一份 cookie 走一遍授权链
 
-##### 2.2.2 `_probe_access_token()`:本模块唯一"实打实打一次"的地方
+`refresh_by_session_exchange()`(`platforms/chatgpt/token_refresh.py:369`)是 ② 的补位,做法和补 RT 的"会话复用"(`platforms/chatgpt/rt_backfill.py:214`)同源:
 
-`_probe_access_token(at)`(`platforms/chatgpt/token_refresh.py:577`)打 `GET /backend-api/me`(带 `CODEX_USER_AGENT`),返回**三态**:
+1. `flow.from_existing_credentials(session_token, access_token, device_id)` 恢复登录态;两个凭证都空/都失效就报"库里的 session_token 已失效";
+2. `flow.oauth_codex_rt_exchange(mail_provider=…)` 走 Codex OAuth 授权链,直接换回全新 AT + RT;
+3. 拿到的 AT 与刷新前**相同**同样判失败(授权链没换出新凭证),避免把旧 AT 当新凭证收下。
+
+环境开关(`_session_exchange_env_overrides()` `:585`):
+
+| 开关 | 值 | 为什么 |
+|---|---|---|
+| `OAUTH_CODEX_PROMPT` | `""`(清空) | Codex authorize 默认带 `prompt=login`,含义正是"忽略现有会话、重走登录页" —— **不清掉必然白跑一趟** |
+| `OAUTH_CODEX_RT_EXCHANGE` | `1` | 要顺带换回 RT |
+| `OAUTH_CODEX_RT_ALLOW_RETRY` | `1` | 一轮里可能要试两次 authorize,默认"本轮只试一次"会吞掉第二次 |
+| `WEBUI_ALLOW_LOGIN` | `1` | 已有账号,别让协议层把"这邮箱已注册"当失败 |
+| `OTP_TIMEOUT` | `_otp_timeout()` | 授权链被打回 `/log-in` 后补登录时的等码超时 |
+
+`device_id` 优先用库里 `extra["device_id"]`(注册时落的 `oai-did`);缺失时按邮箱派生固定值(`_derive_device_id()` `:484`,UUIDv5)—— 随机 UUID 等于每次刷新都换一台"新设备",授权链更容易被打回登录页。
+
+④ 协议登录没有"验货"问题:拿的是刚登录出来的全新凭证,失败就明确失败,不装作成功。
+
+##### 2.2.3 `_probe_access_token()`:本模块唯一"实打实打一次"的地方
+
+`_probe_access_token(at)`(`platforms/chatgpt/token_refresh.py:719`)打 `GET /backend-api/me`(带 `CODEX_USER_AGENT`),返回**三态**:
 
 | 判定 | 触发 | 语义 |
 |---|---|---|
@@ -3597,7 +3620,7 @@ JWT 解析用 `_decode_jwt_payload()`(`platforms/chatgpt/status_probe.py:60`),�
 | `("invalid", msg)` | 401 / 403 | 上游明确拒绝,这个 AT 已经废了 |
 | `("unknown", msg)` | 网络异常、5xx、429 | **没结论**,不能据此否定 AT —— 一次抖动把好号判死比误判成功更糟 |
 
-`validate_token(at)`(`:615`)是它的薄封装(`(bool, Optional[str])`,`unknown` 按有效处理),仓库里**没有生产调用方**(Session 策略退出编排后它连"备用链路的一部分"都算不上),只有测试在用 —— 别拿它当"强制判死"的入口。
+`validate_token(at)`(`:757`)是它的薄封装(`(bool, Optional[str])`,`unknown` 按有效处理),仓库里**没有生产调用方**(编排里只有 Session 回放那条路直接调 `_probe_access_token`),只有测试在用 —— 别拿它当"强制判死"的入口。
 
 ##### 2.3 触发时机与收件通道
 
@@ -3611,7 +3634,7 @@ JWT 解析用 `_decode_jwt_payload()`(`platforms/chatgpt/status_probe.py:60`),�
 
 `core/scheduler.py` 的定时循环只做两件事:`check_trial_expiry()`(3600s)与 `check_cpa_credentials()`(间隔来自配置),**不含 token 刷新**。
 
-收件通道是**惰性**的:`services/chatgpt_token_refresh.py:100` 交出去的是工厂 `_resolve_mail_provider` 而不是现成的 provider(`:137`),只在真要走 ② 且需要邮箱验证码那一刻才连一次收件服务;失败也只解析一次、不反复重试,原因记进 `mail_unavailable_reason`(`platforms/chatgpt/token_refresh.py:143` `_resolve_mail_provider()`)。RT 能成的号一次都不会碰邮箱。
+收件通道是**惰性**的:`services/chatgpt_token_refresh.py:100` 交出去的是工厂 `_resolve_mail_provider` 而不是现成的 provider(`:137`),只在真要走 ③ / ④ 且需要邮箱验证码那一刻才连一次收件服务;失败也只解析一次、不反复重试,原因记进 `mail_unavailable_reason`(`platforms/chatgpt/token_refresh.py:148` `_resolve_mail_provider()`)。RT / Session 能成的号一次都不会碰邮箱。
 
 ##### 2.4 刷新后回写哪些字段
 
@@ -3628,7 +3651,7 @@ JWT 解析用 `_decode_jwt_payload()`(`platforms/chatgpt/status_probe.py:60`),�
 | `AccountModel.token` | 新 AT | 非空(冗余镜像,列表页读这一列) |
 | `AccountModel.updated_at` | `utcnow()` | 总是 |
 
-补丁**只写非空字段**是有意的:任何一条路拿不到 RT 时都不该用空串覆盖掉库里原有的 `refresh_token`,那等于把号弄坏。
+补丁**只写非空字段**是有意的:Session 回放那条路只出 AT,拿空串覆盖掉库里原有的 `refresh_token` 等于把号弄坏。
 
 **`expires_at` 没有独立的列**,只落在 `extra["chatgpt_token_refresh"]["expires_at"]`。列表页平台动作走的是 `api/actions.py:83-94` 的 `account_extra_patch` 通道(字段并进 `extra`,并单独把 `access_token` 同步到 `AccountModel.token`)。
 
