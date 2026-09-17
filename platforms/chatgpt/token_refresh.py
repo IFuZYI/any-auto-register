@@ -1,23 +1,23 @@
 """Token 刷新模块
 
-按代价从低到高排三条路,第一条成了就不往下走:
+按代价从低到高排两条路,第一条成了就不往下走:
 
     ① RT 刷新(``refresh_by_oauth_token``):拿 refresh_token 走 OAuth
        ``/oauth/token``。一次 POST 就完事,不碰风控,而且能顺带换回新的 RT。
 
-    ② Session 刷新(``refresh_by_session_token``):RT 没有或已失效时才用。
-       拿 session_token 打 ``/api/auth/session`` 换 AT。只出 AT,不出 RT。
-       这个端点只是把会话 cookie 里**已经嵌着的** AT 回放出来,并不会真去
-       找 OpenAI 换一个新的,所以拿到结果必须再验一次:AT 与刷新前相同、或
-       换出来的新 AT 被 ``/backend-api/me`` 明确拒绝,都判这条策略失败,
-       继续降级到 ③ 走账号密码(带 2FA)重登录。
+    ② 协议登录(``refresh_by_login``):RT 为空或已失效时的兜底。邮箱 + 密码
+       重跑一遍协议登录链,库里有 TOTP 密钥就自动算码过 2FA。这条路要几十秒、
+       可能要邮箱验证码,但产出最全(AT + RT + session)。
 
-    ③ 协议登录(``refresh_by_login``):前两条都没材料或都失败时的兜底。
-       邮箱 + 密码重跑一遍协议登录链,库里有 TOTP 密钥就自动算码过 2FA。
-       这条路要几十秒、可能要邮箱验证码,但产出最全(AT + RT + session)。
-
-三条路都以「拿到新的 access_token」为最低目标 —— 这是本模块存在的意义,
+两条路都以「拿到新的 access_token」为最低目标 —— 这是本模块存在的意义,
 顺带换到的 RT / session_token 一并带回,由调用方决定落库哪些。
+
+关于 session_token:``refresh_by_session_token`` 与配套的 ``_probe_access_token``
+仍然保留,但**已退出刷新编排**。``/api/auth/session`` 只是把会话 cookie 里
+已经嵌着的 AT 回放出来,它自己不会去找 OpenAI 换新的 —— 拿到 200 也说明不了
+凭证是新的,得靠比对旧值 + ``/backend-api/me`` 验货兜底,会话已失效时更是直接
+403。既然走一遍登录链能稳稳拿到全套新凭证,就没必要再留着这条既慢又不可信的
+中间路径。保留代码是给需要单点调用它的场景备用。
 """
 
 from __future__ import annotations
@@ -33,7 +33,8 @@ from platforms.chatgpt.protocol.response_summary import describe_error
 
 logger = logging.getLogger(__name__)
 
-# 三条策略的标识,落库留痕与前端展示都用这套
+# 策略标识,落库留痕与前端展示都用这套
+# (STRATEGY_SESSION 已不在编排里,保留给备用的 refresh_by_session_token 留痕)
 STRATEGY_REFRESH_TOKEN = "refresh_token"
 STRATEGY_SESSION = "session"
 STRATEGY_LOGIN = "login"
@@ -91,7 +92,7 @@ class TokenRefreshResult:
 class TokenRefreshManager:
     """Token 刷新管理器。
 
-    优先级:RT 刷新 → Session 刷新 → 协议登录兜底。
+    优先级:RT 刷新 → 协议登录兜底。
     """
 
     # OpenAI OAuth 端点
@@ -116,11 +117,10 @@ class TokenRefreshManager:
             mail_provider: 邮箱注入点,协议登录撞上邮箱验证码时用
             mail_unavailable_reason: 读不到收件箱时的原因,用于拼人话报错
             mail_provider_resolver: 惰性邮箱工厂,返回 ``(provider, 失败原因)``。
-                只有真要走协议登录时才会被调用一次 —— 快路径(RT/Session)压根
-                用不上收件箱,不该为了一个大概率不跑的分支先去连一遍邮箱服务;
-                而 Session 那条路"看着成功其实没换出新 AT"再降级过来时,又必须
-                拿得到通道,所以只能靠惰性解析同时满足这两头。
-            allow_login: 关掉就不走第三条协议登录兜底
+                只有真要走协议登录时才会被调用一次 —— RT 快路径压根用不上收件箱,
+                不该为了一个大概率不跑的分支先去连一遍邮箱服务;而 RT 失效降级到
+                协议登录那一刻,又必须拿得到通道,所以只能靠惰性解析同时满足这两头。
+            allow_login: 关掉就不走协议登录兜底
             log_fn: 日志回调,后台任务用它把过程实时推给前端
         """
         self.proxy_url = proxy_url
@@ -244,7 +244,7 @@ class TokenRefreshManager:
             logger.error(result.error_message)
             return result
 
-    # ── 策略二:Session Token ──
+    # ── 备用策略:Session Token(已不在编排里) ──
 
     def refresh_by_session_token(
         self,
@@ -254,6 +254,10 @@ class TokenRefreshManager:
     ) -> TokenRefreshResult:
         """
         使用 Session Token 刷新(只出 AT,不出 RT)
+
+        **注意:这条策略已不在 ``refresh_account`` 的编排里**,保留仅供单点
+        调用备用。调用方需自己承担下面这套验货成本,否则很容易把旧 AT 当新
+        凭证收下。
 
         ``/api/auth/session`` 只是把 NextAuth 会话 cookie 里已经嵌着的 AT 回放
         出来,它自己不会去找 OpenAI 换新的 —— 会话里的 AT 早就过期或被作废时,
@@ -352,7 +356,7 @@ class TokenRefreshManager:
             logger.error(result.error_message)
             return result
 
-    # ── 策略三:协议登录兜底 ──
+    # ── 策略二:协议登录兜底 ──
 
     def refresh_by_login(
         self,
@@ -363,8 +367,8 @@ class TokenRefreshManager:
     ) -> TokenRefreshResult:
         """邮箱 + 密码重跑协议登录链拿 AT(纯协议,不开浏览器)。
 
-        RT / session 都没有或都失效时才走这条。库里存了 TOTP 密钥就自动算码
-        过 2FA;OpenAI 要邮箱验证码时靠注入的 ``mail_provider`` 收码。
+        RT 没有或已失效时才走这条。库里存了 TOTP 密钥就自动算码过 2FA;
+        OpenAI 要邮箱验证码时靠注入的 ``mail_provider`` 收码。
 
         产出最全:AT + RT + session_token 一起带回来。
         """
@@ -480,12 +484,13 @@ class TokenRefreshManager:
 
         优先级:
         1. OAuth Refresh Token 刷新(最快,能顺带换新 RT)
-        2. Session Token 刷新(只出 AT)
-        3. 邮箱 + 密码协议登录(兜底,产出最全但最慢)
+        2. 邮箱 + 密码协议登录(兜底,产出最全但最慢)
+
+        Session 刷新(``refresh_by_session_token``)已不参与编排,保留备用。
 
         Args:
             account: 账号对象,需带 email / password / refresh_token /
-                     session_token / client_id / totp_secret 等字段
+                     client_id / totp_secret 等字段
 
         Returns:
             TokenRefreshResult: 刷新结果,``success`` 表示拿到了新的 access_token
@@ -496,13 +501,13 @@ class TokenRefreshManager:
         def _absorb(partial: TokenRefreshResult, *, usable: bool) -> None:
             """把某条策略拿到的凭证并进最终结果,只覆盖非空值。
 
-            前一条策略可能已经刷出了 session_token,后一条失败返回的空值
-            不该把它抹掉。
+            一条路拿到的凭证(比如协议登录途中顺带换到的 RT / session_token),
+            不该被后面失败返回的空值抹掉。
 
-            ``usable=False`` 时不吸收 access_token:Session 那条路判失败时手里
-            往往正攥着一个已被上游作废的 AT,收进来会被 ``build_extra_patch``
-            写回库里,把原先还能用的 AT 一起弄坏。其余凭证(RT/session/cookies)
-            无论成败都值得留下。
+            ``usable=False`` 时不吸收 access_token:失败那条路手里往往正攥着
+            一个已被上游作废的 AT,收进来会被 ``build_extra_patch`` 写回库里,
+            把原先还能用的 AT 一起弄坏。其余凭证(RT/session/cookies)无论
+            成败都值得留下。
             """
             for attr in ("refresh_token", "session_token", "id_token", "cookie_header"):
                 value = str(getattr(partial, attr, "") or "").strip()
@@ -517,8 +522,6 @@ class TokenRefreshManager:
                 final.expires_at = partial.expires_at
 
         refresh_token = str(getattr(account, "refresh_token", "") or "").strip()
-        session_token = str(getattr(account, "session_token", "") or "").strip()
-        previous_access_token = str(getattr(account, "access_token", "") or "").strip()
         password = str(getattr(account, "password", "") or "").strip()
         totp_secret = str(getattr(account, "totp_secret", "") or "").strip()
 
@@ -545,34 +548,13 @@ class TokenRefreshManager:
                 RefreshAttempt(STRATEGY_REFRESH_TOKEN, False, "库里没有 refresh_token，跳过")
             )
 
-        # ② Session 刷新
-        if session_token:
-            self.log(f"[刷新Token] 尝试 Session 刷新: {email}")
-            partial = self.refresh_by_session_token(
-                session_token,
-                previous_access_token=previous_access_token,
-            )
-            _absorb(partial, usable=partial.success)
-            if partial.success:
-                final.success = True
-                final.strategy = STRATEGY_SESSION
-                final.attempts.append(RefreshAttempt(STRATEGY_SESSION, True, "拿到 access_token"))
-                self.log(f"[刷新Token] Session 刷新成功: {email}")
-                return final
-            final.attempts.append(RefreshAttempt(STRATEGY_SESSION, False, partial.error_message))
-            self.log(f"[刷新Token] Session 刷新未果: {partial.error_message}")
-        else:
-            final.attempts.append(
-                RefreshAttempt(STRATEGY_SESSION, False, "库里没有 session_token，跳过")
-            )
-
-        # ③ 协议登录兜底
+        # ② 协议登录兜底
         if not self.allow_login:
             final.attempts.append(RefreshAttempt(STRATEGY_LOGIN, False, "已关闭协议登录兜底"))
         elif not password:
             final.attempts.append(RefreshAttempt(STRATEGY_LOGIN, False, "库里没有密码，无法协议登录"))
         else:
-            self.log(f"[刷新Token] 前两条路不通，改走协议登录: {email}")
+            self.log(f"[刷新Token] RT 不通，改走协议登录: {email}")
             partial = self.refresh_by_login(email, password, totp_secret=totp_secret)
             _absorb(partial, usable=partial.success)
             if partial.success:

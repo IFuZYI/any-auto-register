@@ -1819,7 +1819,7 @@ export default function Accounts() {
                   ? `处理所选 ${selectedRowKeys.length} 个账号`
                   : `处理当前筛选的 ${total} 个账号`
               }
-              description="按代价从低到高试：先用 refresh_token 换新的 access_token，不行再用 session_token 换；两条都没有或都失效时，用邮箱密码走一遍协议登录（库里存了 2FA 密钥会自动算码），可能需要收一封验证码。刷到的 Token 会直接写回账号。"
+              description="先用 refresh_token 直接换新的 access_token（顺带换新 RT）；RT 为空或换失败时，用邮箱密码走一遍协议登录（库里存了 2FA 密钥会自动算码），可能需要收一封验证码。刷到的 Token 会直接写回账号。"
             />
             <Form form={refreshTokenForm} layout="vertical" onFinish={handleRefreshToken}>
               <Form.Item
@@ -1827,16 +1827,16 @@ export default function Accounts() {
                 label="跳过没有刷新凭据的账号"
                 initialValue={true}
                 valuePropName="checked"
-                extra="没有 RT、没有 Session、也没有密码的账号跑了必然失败，默认剔掉"
+                extra="没有 RT、也没有密码的账号跑了必然失败，默认剔掉"
               >
                 <Switch />
               </Form.Item>
               <Form.Item
                 name="allow_login"
-                label="前两条路都失效时用邮箱密码登录"
+                label="RT 失效时用邮箱密码登录"
                 initialValue={true}
                 valuePropName="checked"
-                extra="关掉则只试 RT 与 Session 两条快路径，快但拿不到就放弃"
+                extra="关掉则只试 RT 快路径，快但拿不到就放弃"
               >
                 <Switch />
               </Form.Item>
