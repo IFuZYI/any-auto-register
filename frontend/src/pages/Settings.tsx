@@ -407,6 +407,11 @@ const TAB_ITEMS = [
           { key: 'icloud_region', label: '区域' },
           { key: 'icloud_alias_label', label: '别名标签', placeholder: 'any-auto-register' },
           { key: 'icloud_alias_note', label: '别名备注', placeholder: '自动注册生成' },
+          {
+            key: 'public_base_url',
+            label: '面板访问地址',
+            placeholder: '留空则用浏览器地址栏的地址',
+          },
         ],
       },
     ],

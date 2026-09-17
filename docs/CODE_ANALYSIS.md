@@ -304,10 +304,10 @@ SUPPORTED_PLATFORMS = ("chatgpt", "icloud")
 
 | 方法 | 路径 | 处理函数 | 作用 |
 |---|---|---|---|
-| GET | `/api/config` | `api/config.py:143` get_config | 返回 CONFIG_KEYS 白名单内的全部配置（含默认值兜底） |
-| PUT | `/api/config` | `api/config.py:192` update_config | 批量写配置，非白名单 key 静默丢弃 |
-| POST | `/api/config/applemail/import` | `api/config.py:223` import_applemail_pool | 导入 AppleMail 邮箱池文本，可绑定到配置 |
-| GET | `/api/config/applemail/pool` | `api/config.py:252` get_applemail_pool_snapshot | 读取 AppleMail 池文件快照 |
+| GET | `/api/config` | `api/config.py:147` get_config | 返回 CONFIG_KEYS 白名单内的全部配置（含默认值兜底） |
+| PUT | `/api/config` | `api/config.py:196` update_config | 批量写配置，非白名单 key 静默丢弃 |
+| POST | `/api/config/applemail/import` | `api/config.py:227` import_applemail_pool | 导入 AppleMail 邮箱池文本，可绑定到配置 |
+| GET | `/api/config/applemail/pool` | `api/config.py:256` get_applemail_pool_snapshot | 读取 AppleMail 池文件快照 |
 
 ##### 平台操作 `api/actions.py`
 
@@ -374,29 +374,30 @@ SUPPORTED_PLATFORMS = ("chatgpt", "icloud")
 
 | 方法 | 路径 | 处理函数 | 作用 |
 |---|---|---|---|
-| POST | `/api/icloud/login-sessions` | `api/icloud.py:131` start_login | 发起 Apple ID 登录会话（可能进入 2FA 挑战） |
-| GET | `/api/icloud/login-sessions/{login_id}` | `api/icloud.py:152` get_login | 查询登录会话当前状态 |
-| POST | `/api/icloud/login-sessions/{login_id}/verify` | `api/icloud.py:160` verify_login | 提交两步验证码；完成后自动落库主号 |
-| POST | `/api/icloud/login-sessions/{login_id}/resend` | `api/icloud.py:168` resend_login_code | 重发验证码 |
-| POST | `/api/icloud/login-sessions/{login_id}/sms` | `api/icloud.py:176` send_login_sms | 改用短信通道下发验证码 |
-| DELETE | `/api/icloud/login-sessions/{login_id}` | `api/icloud.py:184` cancel_login | 取消并销毁登录会话 |
-| GET | `/api/icloud/accounts` | `api/icloud.py:193` list_accounts | 列出已接入的 iCloud 主号 |
-| POST | `/api/icloud/accounts/import-cookie` | `api/icloud.py:198` import_cookie | 用 Cookie/Session 直接导入主号，绕过交互登录 |
-| PATCH | `/api/icloud/accounts/{account_id}` | `api/icloud.py:218` update_account | 启用/停用主号 |
-| DELETE | `/api/icloud/accounts/{account_id}` | `api/icloud.py:226` delete_account | 删除主号 |
-| POST | `/api/icloud/accounts/{account_id}/sync` | `api/icloud.py:235` sync_account | 从 Apple 侧同步隐私邮箱列表 |
-| GET | `/api/icloud/accounts/{account_id}/messages` | `api/icloud.py:243` account_messages | 拉取主号收件箱（可按收件人过滤） |
-| GET | `/api/icloud/aliases` | `api/icloud.py:257` list_aliases | 列出隐私邮箱，可按主号过滤 |
-| POST | `/api/icloud/aliases` | `api/icloud.py:262` generate_aliases | 批量生成隐私邮箱（1~5 个，自动编号标签） |
-| POST | `/api/icloud/aliases/batch-delete` | `api/icloud.py:277` batch_delete_aliases | 批量删除隐私邮箱，remote 控制是否同步删远端 |
-| DELETE | `/api/icloud/aliases/{alias_id}` | `api/icloud.py:285` delete_alias | 删除单个隐私邮箱 |
-| GET | `/api/icloud/aliases/{alias_id}/messages` | `api/icloud.py:294` alias_messages | 拉取某隐私邮箱的邮件列表 |
+| POST | `/api/icloud/login-sessions` | `api/icloud.py:144` start_login | 发起 Apple ID 登录会话（可能进入 2FA 挑战） |
+| GET | `/api/icloud/login-sessions/{login_id}` | `api/icloud.py:165` get_login | 查询登录会话当前状态 |
+| POST | `/api/icloud/login-sessions/{login_id}/verify` | `api/icloud.py:173` verify_login | 提交两步验证码；完成后自动落库主号 |
+| POST | `/api/icloud/login-sessions/{login_id}/resend` | `api/icloud.py:181` resend_login_code | 重发验证码 |
+| POST | `/api/icloud/login-sessions/{login_id}/sms` | `api/icloud.py:189` send_login_sms | 改用短信通道下发验证码 |
+| DELETE | `/api/icloud/login-sessions/{login_id}` | `api/icloud.py:197` cancel_login | 取消并销毁登录会话 |
+| GET | `/api/icloud/accounts` | `api/icloud.py:206` list_accounts | 列出已接入的 iCloud 主号 |
+| POST | `/api/icloud/accounts/import-cookie` | `api/icloud.py:211` import_cookie | 用 Cookie/Session 直接导入主号，绕过交互登录 |
+| PATCH | `/api/icloud/accounts/{account_id}` | `api/icloud.py:231` update_account | 启用/停用主号 |
+| DELETE | `/api/icloud/accounts/{account_id}` | `api/icloud.py:239` delete_account | 删除主号 |
+| POST | `/api/icloud/accounts/{account_id}/sync` | `api/icloud.py:248` sync_account | 从 Apple 侧同步隐私邮箱列表 |
+| GET | `/api/icloud/accounts/{account_id}/messages` | `api/icloud.py:256` account_messages | 拉取主号收件箱（可按收件人过滤） |
+| GET | `/api/icloud/aliases` | `api/icloud.py:270` list_aliases | 列出隐私邮箱，可按主号过滤 |
+| POST | `/api/icloud/aliases` | `api/icloud.py:275` generate_aliases | 批量生成隐私邮箱（1~5 个，自动编号标签） |
+| POST | `/api/icloud/aliases/batch-delete` | `api/icloud.py:290` batch_delete_aliases | 批量删除隐私邮箱，remote 控制是否同步删远端 |
+| POST | `/api/icloud/aliases/import-to-pool` | `api/icloud.py:298` import_aliases_to_pool | 把隐私邮箱导进 MailAPI URL 号池，等价于导出 `mail_url` 再手工导入 |
+| DELETE | `/api/icloud/aliases/{alias_id}` | `api/icloud.py:312` delete_alias | 删除单个隐私邮箱 |
+| GET | `/api/icloud/aliases/{alias_id}/messages` | `api/icloud.py:321` alias_messages | 拉取某隐私邮箱的邮件列表 |
 
 ##### 免登录邮件页 `api/shared_mail.py`（无 /api 前缀）
 
 | 方法 | 路径 | 处理函数 | 作用 |
 |---|---|---|---|
-| GET | `/m/{share_token}` | `api/shared_mail.py:150` shared_latest_mail | 免登录 HTML 页：按 share_token 展示该隐私邮箱最新一封邮件 |
+| GET | `/m/{share_token}` | `api/shared_mail.py:150` shared_latest_mail | 免登录 HTML 页：按 share_token 展示该隐私邮箱最新一封邮件。**这条链接本身也是号池里的取码地址**——「导入 MailAPI 号池」把它按 `隐私邮箱----<origin>/m/<token>` 落进 `outlook_accounts.mailapi_url`，注册任务靠 `MailApiUrlOtpBackend` 反复 GET 它取码 |
 
 ##### 接码探针 `api/sms.py`
 
@@ -534,7 +535,7 @@ class ConfigItem(SQLModel, table=True):
 
 ##### 3.3 `api/config.py` 暴露的配置项分类
 
-`CONFIG_KEYS` 白名单共 **112 项**（`core/http_client.py:15-128`），读写两侧都以它为准：`GET` 只返回白名单内的 key（`core/http_client.py:188`），`PUT` 只接受白名单内的 key、其余静默丢弃（`core/http_client.py:194`）。
+`CONFIG_KEYS` 白名单共 **113 项**（`api/config.py:15-132`），读写两侧都以它为准：`GET` 只返回白名单内的 key（`api/config.py:192`），`PUT` 只接受白名单内的 key、其余静默丢弃（`api/config.py:198`）。
 
 | 分类 | 代表 key |
 |---|---|
@@ -544,18 +545,18 @@ class ConfigItem(SQLModel, table=True):
 | 邮箱路由 | `mail_provider`、`mail_import_source`、`outlook_backend`、`mailbox_otp_timeout_seconds` |
 | 支付与代理 | `payment_link_proxy`、`payment_pay_proxy`、`payment_proxy` |
 | 下游同步目标 | `cpa_*`、`sub2api_*`、`team_manager_*`、`codex_proxy_*`、`cliproxyapi_*` |
-| iCloud | `icloud_region`、`icloud_alias_label`、`icloud_account_email` |
+| iCloud | `icloud_region`、`icloud_alias_label`、`icloud_account_email`、`public_base_url`（面板对外访问地址，隐私邮箱导号池时拼免登录链接用；平时前端会把浏览器地址栏的 origin 带上来，只有服务端单独跑时才靠它兜底） |
 | 短信接码 | `sms_*`（共 16 项，含自动选国、价格上限、复用策略） |
 | 贡献系统 | `contribution_*`、`custom_contribution_*` |
 | 执行器 | `default_executor`、`register_retry_times`、`external_apps_update_mode` |
 
-`GET /api/config` 还承担**默认值兜底**职责（`core/http_client.py:143-188`）：对 `applemail_base_url`、`luckmail_base_url`、`outlook_backend`、`sms_provider` 等十余项，值为空时填入内置默认；并做历史值迁移（`mail_provider == "outlook"` 统一改写为 `"microsoft"`，`core/http_client.py:145-146`）。
+`GET /api/config` 还承担**默认值兜底**职责（`api/config.py:147-192`）：对 `applemail_base_url`、`luckmail_base_url`、`outlook_backend`、`sms_provider` 等十余项，值为空时填入内置默认；并做历史值迁移（`mail_provider == "outlook"` 统一改写为 `"microsoft"`，`api/config.py:149-150`）。
 
-`PUT` 侧有三处入参规整（`core/http_client.py:195-217`）：`mail_provider` 同样的 outlook→microsoft 改写；`mail_import_source` 按是否同请求携带 `mail_provider` 决定用 `align_source_with_provider` 还是 `normalize_mail_import_source`；`email_domain_level_count` 强制为 ≥2 的整数，否则 400。
+`PUT` 侧有三处入参规整（`api/config.py:199-221`）：`mail_provider` 同样的 outlook→microsoft 改写；`mail_import_source` 按是否同请求携带 `mail_provider` 决定用 `align_source_with_provider` 还是 `normalize_mail_import_source`；`email_domain_level_count` 强制为 ≥2 的整数，否则 400。
 
 ##### 3.4 敏感字段的脱敏返回
 
-**没有做任何脱敏。** `GET /api/config` 把 `yescaptcha_key`、`sms_api_key`、`cloudmail_admin_password`、`freemail_password`、`contribution_key` 等全部**原文返回**（`core/http_client.py:188` 一行 dict comprehension，无掩码逻辑）。
+**没有做任何脱敏。** `GET /api/config` 把 `yescaptcha_key`、`sms_api_key`、`cloudmail_admin_password`、`freemail_password`、`contribution_key` 等全部**原文返回**（`api/config.py:192` 一行 dict comprehension，无掩码逻辑）。
 
 全仓库唯一的脱敏实现是 `core/proxy_utils.py:109-145` 的 `redact_proxy_url()`，且它只用于**日志输出**，不用于 API 响应。支付卡片是另一个例外：`api/payments.py:92-105` 的 `_public_card()` 只回传 `last4`，卡号与 CVC 不出接口——这是全项目唯一在响应层做收敛的地方（但底层 `cards.db` 仍是明文存储）。
 
@@ -588,8 +589,8 @@ class ConfigItem(SQLModel, table=True):
 
 | 调用点 | 作用 |
 |---|---|
-| `services/icloud_service.py:272` | `encrypt_json(credentials.to_dict())` 写入 `ICloudAccountModel.credentials_cipher` |
-| `services/icloud_service.py:68` | `decrypt_json(row.credentials_cipher)` 读出 Web Session Cookie 与 IMAP 凭据 |
+| `services/icloud_service.py:285` | `encrypt_json(credentials.to_dict())` 写入 `ICloudAccountModel.credentials_cipher` |
+| `services/icloud_service.py:81` | `decrypt_json(row.credentials_cipher)` 读出 Web Session Cookie 与 IMAP 凭据 |
 
 **未覆盖的敏感数据**：`accounts.password`（明文）、`accounts.token`（明文）、`outlook_accounts.password` / `refresh_token`（明文）、`configs` 表全部 API Key（明文）、`cards.db` 的卡号与 CVC（明文）。即加密能力已具备但只用在一处，其余凭据仍是裸存。
 
@@ -843,7 +844,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 ##### 7.8 其他
 
 - **SPA fallback 吞掉未匹配路由**：`@app.get("/{full_path:path}")`（`main.py:152-154`）返回 index.html，静态目录存在时任何拼错的 `/api` 路径会得到 200 + HTML 而非 404（因为路由已在前面注册，实际只影响未注册前缀）。
-- **`POST /api/config/applemail/import` 接受任意 `pool_dir`**（`core/http_client.py:222-248`），路径合法性校验位于 `services/mail_imports` 侧，API 层未做限制。
+- **`POST /api/config/applemail/import` 接受任意 `pool_dir`**（`api/config.py:226-252`），路径合法性校验位于 `services/mail_imports` 侧，API 层未做限制。
 - **`api/contribution.py` 的多候选路径重试**（`api/contribution.py:14-29`）：对每个操作准备 2~4 个候选 endpoint 依次尝试，用于兼容贡献服务器的不同版本；失败时把全部 attempts 连同各自 status_code 返回给前端，便于排障但也暴露了上游拓扑。
 - **`api/accounts.py:277-281` 的 `background_tasks` 默认值为 `None`**：`check_all_accounts` 签名写成 `background_tasks: BackgroundTasks = None`，FastAPI 会正常注入，但该默认值使静态检查无法发现误用。
 - **错误处理不一致**：`api/actions.py:374-375` 的 `execute_action` 把异常转成 `{"ok": False, "error": ...}` 并返回 **200**，而同文件其他端点用 HTTPException 返回 4xx/5xx。前端需按端点分别判断成功与否。
@@ -2816,15 +2817,15 @@ flowchart TD
 
 #### 3.1 配置项总表
 
-配置白名单（决定哪些 key 能通过设置页保存）在 `api/config.py:105-120`；服务端填默认值在 `api/config.py:179-186`。全部 `sms_*` 项由 `resolve_sms_settings`（`services/sms_service.py:1108`）从 `config_store` 抽出并叠加任务级覆盖（只接受 `sms_` 前缀且非空值，`:1117-1119`）。
+配置白名单（决定哪些 key 能通过设置页保存）在 `api/config.py:109-124`；服务端填默认值在 `api/config.py:183-190`。全部 `sms_*` 项由 `resolve_sms_settings`（`services/sms_service.py:1108`）从 `config_store` 抽出并叠加任务级覆盖（只接受 `sms_` 前缀且非空值，`:1117-1119`）。
 
 | 配置 key | 默认值 | 作用 | 读取位置 | 能否按任务覆盖 |
 | --- | --- | --- | --- | --- |
-| `sms_enabled` | `"0"`（关） | 总开关；关则 `build_phone_callback` 返回 `None`，命中 add-phone 回落手工号码路径 | `services/sms_service.py:1135`；默认填充 `api/config.py:179` | 能（`resolve_sms_settings` 前缀匹配） |
-| `sms_provider` | `smsbower` | 选平台，决定 base_url 与固定价参数写法 | `services/sms_service.py:1149`、工厂 `:894`；默认 `api/config.py:181` | 能 |
+| `sms_enabled` | `"0"`（关） | 总开关；关则 `build_phone_callback` 返回 `None`，命中 add-phone 回落手工号码路径 | `services/sms_service.py:1135`；默认填充 `api/config.py:183` | 能（`resolve_sms_settings` 前缀匹配） |
+| `sms_provider` | `smsbower` | 选平台，决定 base_url 与固定价参数写法 | `services/sms_service.py:1149`、工厂 `:894`；默认 `api/config.py:185` | 能 |
 | `sms_api_key` | 空（必填） | 平台 API Key；为空时打告警并跳过接码 | `services/sms_service.py:1138`、`:899` | 能 |
-| `sms_service` | `dr`（`SMS_DEFAULT_SERVICE`，`services/sms_service.py:36`） | 服务码，OpenAI 对应 `dr`；租号与查国家排名**必须同值** | `services/sms_service.py:1151`、`:906`；默认 `api/config.py:184` | 能（`api/sms.py:41` 也支持探针级覆盖） |
-| `sms_country` | `52`（泰国，`SMS_DEFAULT_COUNTRY`，`services/sms_service.py:37`） | 默认国家 ID；未开自动选号时就是唯一候选 | `services/sms_service.py:1152`、`:907`、`:997`；默认 `api/config.py:186` | 能 |
+| `sms_service` | `dr`（`SMS_DEFAULT_SERVICE`，`services/sms_service.py:36`） | 服务码，OpenAI 对应 `dr`；租号与查国家排名**必须同值** | `services/sms_service.py:1151`、`:906`；默认 `api/config.py:188` | 能（`api/sms.py:41` 也支持探针级覆盖） |
+| `sms_country` | `52`（泰国，`SMS_DEFAULT_COUNTRY`，`services/sms_service.py:37`） | 默认国家 ID；未开自动选号时就是唯一候选 | `services/sms_service.py:1152`、`:907`、`:997`；默认 `api/config.py:190` | 能 |
 | `sms_auto_country` | `False` | 自动选最优国家开关；关则只用 `sms_country` | `services/sms_service.py:1154`，消费于 `:996` | 能 |
 | `sms_allowed_countries` | 空 | 允许的国家（逗号/分号分隔）；非空时**优先级最高**，只在这些国家里按价格升序依次尝试 | `services/sms_service.py:993` | 能 |
 | `sms_auto_min_stock` | `20` | 自动选号的最低库存门槛；先按 20 挑，挑不到降到 1 再挑一遍 | `services/sms_service.py:1015`，逻辑 `:424` | 能 |
@@ -4555,7 +4556,7 @@ LuckMailError (Exception)
 | type | 标签 | 输入格式 | 数据落到哪 |
 |---|---|---|---|
 | `applemail` | AppleMail / 小苹果 | JSON 数组/对象（`email`/`clientId`/`refreshToken`/`folder`），或每行 `email----password----client_id----refresh_token` 文本 | **本地 JSON 文件**：`mail/applemail_*.json`（`core/applemail_pool.py:254` `save_applemail_pool_json`）；`bind_to_config` 为真时把 `applemail_pool_dir`/`applemail_pool_file` 写进 config |
-| `microsoft` / `outlook` | 微软邮箱（Outlook / Hotmail） | 自动识别两种：4 段 `邮箱----密码----client_id----refresh_token`；2 段 `邮箱----mailapi_url` | **SQLite 表 `outlook_accounts`**（`core/db.py:80` `OutlookAccountModel`），一行一号 |
+| `microsoft` / `outlook` | 微软邮箱（Outlook / Hotmail） | 自动识别两种：4 段 `邮箱----密码----client_id----refresh_token`；2 段 `邮箱----mailapi_url` | **SQLite 表 `outlook_accounts`**（`core/db.py:80` `OutlookAccountModel`），一行一号。**iCloud 隐私邮箱也走这一行**：`POST /api/icloud/aliases/import-to-pool` 把别名拼成 2 段格式喂给本策略，落库为 `account_type=mailapi_url`（见 4.4.1） |
 
 AppleMail 的解析在 `core/applemail_pool.py:147` `parse_applemail_pool_content`，兼容 JSON 数组、带 `data/items/accounts/list/emails/mails` 包裹的对象、`----`/Tab/空格分隔的文本行，3 段与 4 段（多一个 password）两种字段数。
 
@@ -4615,7 +4616,7 @@ AppleMail 的解析在 `core/applemail_pool.py:147` `parse_applemail_pool_conten
 
 配套函数：`normalize_mail_import_source()`（收敛成四个合法值，legacy `microsoft` → `outlook`）、`resolve_mail_provider_from_source()`（视图 → 实际 provider）、`align_source_with_provider()`（provider 与视图打架时以 provider 为准，避免存出「小苹果池 + MailAPI 视图」）。
 
-服务端在 `api/config.py:148` 读取时归一化、`:197` 写入时对齐。前端镜像了同一套逻辑在 `frontend/src/lib/mailImport.ts`；注册任务提交必须带上 `mail_import_source`（`frontend/src/pages/RegisterTaskPage.tsx:140`），否则单独改导入类型不生效。
+服务端在 `api/config.py:153` 读取时归一化、`:201-208` 写入时对齐。前端镜像了同一套逻辑在 `frontend/src/lib/mailImport.ts`；注册任务提交必须带上 `mail_import_source`（`frontend/src/pages/RegisterTaskPage.tsx:140`），否则单独改导入类型不生效。
 
 筛不到号时 `_pop_account()` 分四种情况报不同的话（`core/base_mailbox.py:3773-3789`）：同类型剩的都注册过了 / 选的类型池里一个都没有（并说明还剩多少其他类型、不会顶替）/ 整池都注册过了 / 池子是空的。
 
@@ -4640,7 +4641,7 @@ AppleMail 的解析在 `core/applemail_pool.py:147` `parse_applemail_pool_conten
 
 | 维度 | `microsoft_oauth` | `mailapi_url` |
 |---|---|---|
-| 导入格式 | `邮箱----密码----client_id----refresh_token`（4 段） | `邮箱----https://mailapi.icu/key?...`（2 段） |
+| 导入格式 | `邮箱----密码----client_id----refresh_token`（4 段） | `邮箱----https://mailapi.icu/key?...`（2 段）；**iCloud 隐私邮箱也走这一行**：`邮箱----<面板地址>/m/<share_token>` |
 | 导入时校验 | 并发跑 `probe_oauth_availability()`，换不出 token 就拒 | 只校验 URL 是 http/https；**不做联网探测**（`tests/test_mail_imports_service.py:70` 断言 `OutlookMailbox` 根本没被实例化） |
 | 运行时后端 | `graph`（默认）或 `imap` | `mailapi_url` |
 | 取信方式 | refresh_token 换 access_token → Graph REST 或 IMAP XOAUTH2 | 反复 `GET mailapi_url`，从返回的网页/JSON 里抠码 |
@@ -4673,6 +4674,8 @@ Graph 侧（`OutlookGraphMailboxBackend` `:3302`）：轮 `["inbox","junkemail",
 
 MailAPI 侧（`MailApiUrlOtpBackend` `:3529`）：`GET mailapi_url` → `_yyds_decode_raw_content` → `_yyds_safe_extract`。`tests/test_mailapi_url_otp_backend.py` 用一份真实的隐私邮箱分享页 fixture 锁了四条行为：iframe `srcdoc` 里转义过的正文能抠出码、空行前的内容不能丢、追踪链接里的数字不算码、`mailapi_url` 为空要报错而不是静默空轮询。
 
+**这一条正是 iCloud 隐私邮箱的取码路径**：免登录页 `GET /m/{share_token}` 渲染的 HTML（含 iframe `srcdoc`）就是上面那份 fixture 的来源，「导入 MailAPI 号池」只是把 `地址----<origin>/m/<token>` 写进 `outlook_accounts`（见 4.4.1）。所以隐私邮箱地址在号池里长得像微软号，运行时却完全走 `mailapi_url` 分支——`_resolve_backend()` 先看 `account_type`，不看域名。
+
 ##### 7.4 状态流转
 
 ```
@@ -4696,7 +4699,7 @@ MailAPI 侧（`MailApiUrlOtpBackend` `:3529`）：`GET mailapi_url` → `_yyds_d
 
 | 模块 | 作用 | 调用方 |
 |---|---|---|
-| `core/email_domain_policy.py:29` `validate_email_domain_policy(email, config)` | **注册后**的域名合规校验（事后否决，不参与生成）。`email_domain_rule_enabled` 关闭时直接返回；开启时校验：① 域名级数 ≥ `email_domain_level_count`（默认 2，小于 2 报错）；② 域名里至少 2 个英文字母 **且** 至少 2 个数字。不满足抛 `ValueError` | 唯一调用点 `api/tasks.py:617`，且**只在 `mail_provider == "cfworker"` 且地址含 `@` 时触发**。配置校验/默认值在 `api/config.py:205-217`、`:175-178` |
+| `core/email_domain_policy.py:29` `validate_email_domain_policy(email, config)` | **注册后**的域名合规校验（事后否决，不参与生成）。`email_domain_rule_enabled` 关闭时直接返回；开启时校验：① 域名级数 ≥ `email_domain_level_count`（默认 2，小于 2 报错）；② 域名里至少 2 个英文字母 **且** 至少 2 个数字。不满足抛 `ValueError` | 唯一调用点 `api/tasks.py:617`，且**只在 `mail_provider == "cfworker"` 且地址含 `@` 时触发**。配置校验/默认值在 `api/config.py:209-221`、`:179-182` |
 | `core/applemail_pool.py` | 小苹果本地邮箱池文件的**读写与轮转**（不是域名策略）：`parse_applemail_pool_content` `:147`（多格式解析）、`resolve_applemail_pool_path` `:169`（指定文件名 → `mail/` 下找 → 项目根兜底；未指定则按 mtime 取最新的 `*.json|txt|csv`）、`load_applemail_pool_snapshot` `:215`（预览）、`take_next_applemail_record` `:240`（游标轮转）、`save_applemail_pool_json` `:254`（落盘，文件名做 `[^A-Za-z0-9._-]` 清洗） | 运行时：`core/base_mailbox.py:581` `AppleMailMailbox.get_email()` 调 `take_next_applemail_record`。管理面：`services/mail_imports/providers.py:11` 导入其余三个函数 |
 
 另一处「域名策略」其实在 provider 内部：`CFWorkerMailbox._compose_domain()`（`core/base_mailbox.py:2468`）**生成时**就按 `email_domain_level_count` 补齐子域级数——与 `email_domain_policy` 的事后校验是同一配置项的两端，这也解释了为什么只有 cfworker 会被校验。
@@ -5031,7 +5034,7 @@ SRP 登录成功与手工粘贴 Cookie 最终都产出同一个 `SessionImportRe
 | 入口 | 填充字段 | 位置 |
 | --- | --- | --- |
 | SRP 登录完成 | `cookie_header`、`validate_cookie_header`、`client_id`、`region` + IMAP 四项 | `platforms/icloud/login.py:149-159` |
-| 手工/浏览器导入 | `cookie_header` 或 `cookies_json`,可选 `web_auth_token` + `web_auth_token_header` | `api/icloud.py:200-201` |
+| 手工/浏览器导入 | `cookie_header` 或 `cookies_json`,可选 `web_auth_token` + `web_auth_token_header` | `api/icloud.py:213-214` |
 
 登录侧的两个 Cookie 头**作用域不同**(`platforms/icloud/login.py:434-438`):
 
@@ -5113,10 +5116,10 @@ SRP 登录成功与手工粘贴 Cookie 最终都产出同一个 `SessionImportRe
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `id` | int PK | — |
-| `email` | str,index + **unique** | 主号 Apple ID,统一小写(`services/icloud_service.py:252`) |
+| `email` | str,index + **unique** | 主号 Apple ID,统一小写(`services/icloud_service.py:265`) |
 | `display_name` | str | 界面备注名 |
 | `region` | str,默认 `global` | `global` / `china`,决定端点与 Cookie 域 |
-| `status` | str,默认 `active` | 导入成功时置 `active`(`services/icloud_service.py:269`) |
+| `status` | str,默认 `active` | 导入成功时置 `active`(`services/icloud_service.py:282`) |
 | `enabled` | bool,默认 True | 停用后 `resolve_account` 拒绝使用 |
 | `credentials_cipher` | str | **AES-256-GCM 信封**,内容见下表 |
 | `sync_error` | str | 最近一次同步的错误消息,导入成功时清空 |
@@ -5149,13 +5152,13 @@ SRP 登录成功与手工粘贴 Cookie 最终都产出同一个 `SessionImportRe
 
 `from_dict` 用字段白名单过滤未知键,并强制 `imap_port` / `sync_limit` 为 int(`platforms/icloud/credentials.py:37-46`),因此新增字段向后兼容、删除字段不会因旧密文报错。
 
-对外只暴露布尔状态,绝不回传原文——`public_state()` 返回 `has_session_cookies` / `has_dsid` / `has_hme_service_url` / `has_mail_gateway` / `has_web_auth_token` / `has_imap_credentials`(`platforms/icloud/credentials.py:69-78`)。`tests/test_icloud_service.py:94` 直接断言 `"app-specific" not in row.credentials_cipher`,即应用专用密码不得以明文出现在库里。
+对外只暴露布尔状态,绝不回传原文——`public_state()` 返回 `has_session_cookies` / `has_dsid` / `has_hme_service_url` / `has_mail_gateway` / `has_web_auth_token` / `has_imap_credentials`(`platforms/icloud/credentials.py:69-78`)。`tests/test_icloud_service.py:101` 直接断言 `"app-specific" not in row.credentials_cipher`,即应用专用密码不得以明文出现在库里。
 
 两个便捷判定:`has_web_session` 要求 `cookies`、`dsid`、`hme_service_url` 三者齐备;`has_imap` 只看 `imap_password` 非空白(`platforms/icloud/credentials.py:61-67`)。
 
 ##### 4.3 重新登录时的凭据合并
 
-`merged_with`(`platforms/icloud/credentials.py:51-59`)语义:以**新会话为基准**,但若新请求没提交 `imap_password`,则把旧的 `imap_host` / `imap_port` / `imap_username` / `imap_password` 四项整体搬过来。落库处 `services/icloud_service.py:261-265` 据此实现"重新登录不丢 IMAP 配置"。注意判定只看 `imap_password` 一个字段——只改主机名不改密码的提交会被整组回滚成旧值。
+`merged_with`(`platforms/icloud/credentials.py:51-59`)语义:以**新会话为基准**,但若新请求没提交 `imap_password`,则把旧的 `imap_host` / `imap_port` / `imap_username` / `imap_password` 四项整体搬过来。落库处 `services/icloud_service.py:274-278` 据此实现"重新登录不丢 IMAP 配置"。注意判定只看 `imap_password` 一个字段——只改主机名不改密码的提交会被整组回滚成旧值。
 
 ##### 4.4 AES-256-GCM 的具体用法
 
@@ -5194,7 +5197,7 @@ credentials_cipher = "v1:" + base64( nonce[12] || ciphertext || tag[16] )
 
 ##### 4.6 解密失败的用户可见处理
 
-`load_credentials`(`services/icloud_service.py:66-77`)捕获一切解密异常,转成 `ICloudError("credentials_unreadable", "iCloud 主号 {email} 的凭据无法解密(加密密钥已变更),请重新登录该主号")`。裸抛 `InvalidTag` 只会得到一个无信息的 500。列表接口更宽容:`_account_to_dict` 单独兜住异常,把该账号的 `credential_state` 置为 `{"credentials_unreadable": True}`,保证一个坏账号不会让整个列表接口失败(`services/icloud_service.py:129-134`)。
+`load_credentials`(`services/icloud_service.py:79-90`)捕获一切解密异常,转成 `ICloudError("credentials_unreadable", "iCloud 主号 {email} 的凭据无法解密(加密密钥已变更),请重新登录该主号")`。裸抛 `InvalidTag` 只会得到一个无信息的 500。列表接口更宽容:`_account_to_dict` 单独兜住异常,把该账号的 `credential_state` 置为 `{"credentials_unreadable": True}`,保证一个坏账号不会让整个列表接口失败(`services/icloud_service.py:142-147`)。
 
 ##### 4.7 Docker 密钥持久化的坑
 
@@ -5365,15 +5368,15 @@ URL 拼装见 `platforms/icloud/web_client.py:298` 的 `_hme_endpoint`：在服�
 ##### 1.3 生成 → 保留 → 落库完整步骤
 
 1. `POST /api/icloud/aliases`（`api/icloud.py`）→ `services.icloud_service.generate_alias(account_id, label, note)`。
-2. **取主号级互斥锁**：`services/icloud_service.py:311` `with _account_lock(account_id)`。同一主号的生成串行化，防止并发注册互相挤占小时额度。
-3. 校验主号存在且 `enabled`，否则 `account_disabled`（`services/icloud_service.py:313`）。
-4. **本地配额预检**：`alias_quota()` 算滚动一小时窗口，`remaining <= 0` 直接抛 `provider_rate_limited`，**不打 Apple 接口**（`services/icloud_service.py:315`）。
-5. 解密凭据：`load_credentials(row)` → `secret_box.decrypt_json`。解密失败映射成 `credentials_unreadable`，提示“重新登录该主号”（`services/icloud_service.py:66`）。
+2. **取主号级互斥锁**：`services/icloud_service.py:324` `with _account_lock(account_id)`。同一主号的生成串行化，防止并发注册互相挤占小时额度。
+3. 校验主号存在且 `enabled`，否则 `account_disabled`（`services/icloud_service.py:326`）。
+4. **本地配额预检**：`alias_quota()` 算滚动一小时窗口，`remaining <= 0` 直接抛 `provider_rate_limited`，**不打 Apple 接口**（`services/icloud_service.py:328`）。
+5. 解密凭据：`load_credentials(row)` → `secret_box.decrypt_json`。解密失败映射成 `credentials_unreadable`，提示“重新登录该主号”（`services/icloud_service.py:79`）。
 6. **标签兜底**：`label.strip() or DEFAULT_ALIAS_LABEL`（默认 `"隐私邮箱"`）。Apple 的 reserve 不接受空标签，会回 `{"errorCode":"400","errorMessage":"invalid Label"}`，界面上标签是选填的，所以在 `platforms/icloud/web_client.py:164` 兜住。
 7. `POST v1/hme/generate` → 从响应里用 `find_string(generated, "hme","address","email")` 取地址（Apple 字段名不稳定，三个 key 都试）。取不到抛 `invalid_response`。
 8. `POST v1/hme/reserve`，带 `{hme,label,note}`。响应里若带地址则以响应为准（`address = find_string(reserved,...) or address`）。
 9. 组装 `PrivateEmail`：地址 `strip().lower()`、`status=active`、`provider_id = find_string(reserved,"anonymousId","id","identifier","hmeId")`、`created_at=utcnow()`。
-10. `_upsert_alias()` 落库（`services/icloud_service.py:405`），**按 address 全表唯一**去重，首次落库时补 `share_token`。
+10. `_upsert_alias()` 落库（`services/icloud_service.py:626`），**按 address 全表唯一**去重，首次落库时补 `share_token`。
 
 ```mermaid
 flowchart TD
@@ -5405,15 +5408,15 @@ flowchart TD
 
 | 要素 | 实现 |
 |---|---|
-| 上限常量 | `services/icloud_service.py:40` `HOURLY_ALIAS_LIMIT = 5` |
-| 计数函数 | `services/icloud_service.py:151` `alias_quota(account_id)` |
+| 上限常量 | `services/icloud_service.py:43` `HOURLY_ALIAS_LIMIT = 5` |
+| 计数函数 | `services/icloud_service.py:164` `alias_quota(account_id)` |
 | 窗口 | **滚动一小时**：`since = _utcnow() - timedelta(hours=1)`，不是自然小时对齐 |
 | 计数口径 | `ICloudAliasModel` 中 `account_id` 匹配且 `created_at >= since` 的**行数**（`len(recent)`） |
 | 剩余 | `max(HOURLY_ALIAS_LIMIT - used, 0)` |
 | 重置时刻 | 窗口内**最早**一条的 `created_at + 1 小时` |
-| 并发保护 | `services/icloud_service.py:44` 进程内 `_ACCOUNT_LOCKS: dict[int, threading.Lock]`，`_ACCOUNT_LOCKS_GUARD` 保护字典本身 |
-| 拒绝点 | `services/icloud_service.py:316`，错误码 `provider_rate_limited` → HTTP 429（`api/icloud.py:44`） |
-| 对外暴露 | `_account_to_dict()` 里把 `quota` 挂在主号 JSON 上（`services/icloud_service.py:130`），前端可直接显示剩余额度 |
+| 并发保护 | `services/icloud_service.py:57` 进程内 `_ACCOUNT_LOCKS: dict[int, threading.Lock]`，`_ACCOUNT_LOCKS_GUARD` 保护字典本身 |
+| 拒绝点 | `services/icloud_service.py:329`，错误码 `provider_rate_limited` → HTTP 429（`api/icloud.py:44`） |
+| 对外暴露 | `_account_to_dict()` 里把 `quota` 挂在主号 JSON 上（`services/icloud_service.py:143`），前端可直接显示剩余额度 |
 
 两个要注意的口径问题：
 
@@ -5480,7 +5483,7 @@ _RETRIABLE_HME_ACTIONS = frozenset({"v2/hme/list", "v1/hme/generate"})
 
 ##### 1.7 同步远端已有别名：去重与回写
 
-`services/icloud_service.py:328` `sync_aliases(account_id)`：
+`services/icloud_service.py:341` `sync_aliases(account_id)`：
 
 1. `get_account` + `load_credentials`。
 2. `client.list_private_emails(credentials)` → `GET v2/hme/list`。
@@ -5491,7 +5494,7 @@ _RETRIABLE_HME_ACTIONS = frozenset({"v2/hme/list", "v1/hme/generate"})
    - `share_token`：`row.share_token or new_alias_share_token()`——**已有 token 永不轮换**，分享链接稳定。
    - `account_id`：无条件覆写为本次同步的主号（同一地址换主号时会跟着搬家）。
 5. 统计：`created`（新建数）/ `updated`（更新数）/ `fetched`（上游总数），返回带 `synced_at`。
-6. **成功则清空 `sync_error`，失败则记录**：`_record_sync_error(account_id, str(exc))` 后 `raise`（`services/icloud_service.py:335`）。
+6. **成功则清空 `sync_error`，失败则记录**：`_record_sync_error(account_id, str(exc))` 后 `raise`（`services/icloud_service.py:348`）。
 
 注意 `_upsert_alias` 的 address 查询**不带 account_id 过滤**，所以同一个隐私邮箱地址在整库只可能有一行；多主号场景下同步会把行的 `account_id` 改成最后一次同步的主号。
 
@@ -5603,6 +5606,20 @@ DELIVERY_HEADER_NAMES = (
 
 结论：**iCloud 隐私邮箱可以直接作为 ChatGPT 注册与补 RT 的邮箱池**，适配层就是 `ICloudAliasMailProvider`，唯一前提是主号配了 IMAP App 专用密码。
 
+##### 2.7 另一条用法：把隐私邮箱导进 MailAPI URL 号池
+
+上面的 `ICloudAliasMailProvider` 走的是 **IMAP**（主号 App 专用密码 → `imap.mail.me.com`）；同一批别名还有第二条取信路径——「导入 MailAPI 号池」（`POST /api/icloud/aliases/import-to-pool`，见 4.4.1）把免登录页链接写进微软号池，注册时由 `MailApiUrlOtpBackend` 轮询该 URL 抠码。
+
+| 维度 | `ICloudAliasMailProvider`（2.6） | MailAPI URL 号池（本节） |
+|---|---|---|
+| 凭据 | 主号 IMAP App 专用密码 | 免登录链接里的 `share_token`（无需密码） |
+| 取信 | IMAP 直连 Apple | HTTP GET 面板自己的 `/m/<token>` 页 |
+| 落库位置 | `icloud_aliases`（本来就在） | `outlook_accounts`，`account_type=mailapi_url` |
+| 选号 | `resolve_otp_mail_provider` 按地址反查，**第一优先** | 走微软号池，受 `mail_import_source` 视图筛号约束 |
+| 何时用 | 主号配好了 IMAP、按地址补信 | 只有 Web 会话、没有 IMAP 密码；或想统一让注册任务从号池领号 |
+
+两条路不冲突，都依赖同一个 `share_token` / 主号凭据，选哪条看主号有没有 IMAP 密码与任务侧想怎么取号。
+
 #### 三、免登录分享页（`api/shared_mail.py`）
 
 ##### 3.1 为什么不带 `/api` 前缀
@@ -5618,6 +5635,8 @@ if path.startswith("/api/auth/") or not path.startswith("/api/"):
 
 路由最终是 `GET /m/{share_token}`（`api/shared_mail.py:149`），并且 `include_in_schema=False`，不出现在 OpenAPI 文档里。
 
+**这条链接有第二个消费者**：「导入 MailAPI 号池」（`POST /api/icloud/aliases/import-to-pool`）把 `http(s)://<面板地址>/m/<token>` 当成取码地址写进 `outlook_accounts.mailapi_url`，注册任务运行时由 `MailApiUrlOtpBackend` 反复 GET 它抠验证码。也就是说免登录页从"人点开看的分享页"变成了"机器轮询的取码端点"——3.4 节列的那几个缺失（无过期、无撤销、无限流）在这里的后果更直接：每个取号中的注册任务都会按 OTP 超时窗口反复打这个地址。链接必须从**面板自己的对外地址**拼，所以前端传 `window.location.origin`、服务端退回配置项 `public_base_url`（`services/icloud_service.py:436`）。
+
 ##### 3.2 share_token 的生成与安全边界
 
 | 项 | 内容 |
@@ -5627,12 +5646,12 @@ if path.startswith("/api/auth/") or not path.startswith("/api/"):
 | 模型 | `ICloudAliasModel.share_token`，`default_factory` + `index=True`（`core/db.py:127`） |
 | 补写 | `_upsert_alias` 里 `row.share_token = row.share_token or new_alias_share_token()`——只在为空时补，**永不轮换** |
 | 老数据迁移 | `_migrate_icloud_aliases_schema()`（`core/db.py:220`）：SQLite 下先 `ALTER TABLE ... ADD COLUMN share_token TEXT DEFAULT ''`，再**逐行**补随机值。注释点明不能用一条 UPDATE，因为每行必须是不同的随机值 |
-| 查询 | `fetch_latest_shared_message()`（`services/icloud_service.py:471`）按 `share_token` 精确查一行 |
+| 查询 | `fetch_latest_shared_message()`（`services/icloud_service.py:692`）按 `share_token` 精确查一行 |
 
 安全模型是**"链接即权限"（capability URL）**：不用自增 id（注释：用 id 谁都能从 1 数到 100），128 位随机不可枚举。但也意味着：
 
 - **拿到链接的任何人都能读该别名的最新邮件**，包括收到过的 OTP。
-- 返回信息刻意收窄：只回**一封**最新邮件 + 别名地址，拿不到主号邮箱、其它别名、历史邮件（`services/icloud_service.py:474` 注释"只认 token、只回一封"）。虽然内部 `fetch_account_messages` 取了 50 封，但只把 `messages[0]` 交出去。
+- 返回信息刻意收窄：只回**一封**最新邮件 + 别名地址，拿不到主号邮箱、其它别名、历史邮件（`services/icloud_service.py:695` 注释"只认 token、只回一封"）。虽然内部 `fetch_account_messages` 取了 50 封，但只把 `messages[0]` 交出去。
 
 ##### 3.3 页面渲染方式
 
@@ -5678,8 +5697,9 @@ if path.startswith("/api/auth/") or not path.startswith("/api/"):
 | **凭据加解密** | `load_credentials()` 走 `secret_box.decrypt_json`，`import_session()` 走 `encrypt_json`。**上层 api 与下层 platforms 都拿不到明文**（模块 docstring 明确"调用方永远拿不到原文"） |
 | **数据库读写** | 所有 `Session(engine)` 都在这里；`api/icloud.py` 里没有一处 DB 访问，`platforms/icloud/` 也完全不碰 DB（web_client 只认传进来的 `ICloudCredentials`） |
 | **配额与并发控制** | `HOURLY_ALIAS_LIMIT`、`alias_quota()`、`_ACCOUNT_LOCKS` |
-| **主号解析** | `resolve_account(email)`：给了邮箱按邮箱找并校验 `enabled`；没给就取 **id 最小的 enabled 主号**（`services/icloud_service.py:98`） |
+| **主号解析** | `resolve_account(email)`：给了邮箱按邮箱找并校验 `enabled`；没给就取 **id 最小的 enabled 主号**（`services/icloud_service.py:111`） |
 | **DTO 组装** | `_account_to_dict()` / `_alias_to_dict()`，决定哪些字段能出网 |
+| **隐私邮箱入池** | `import_aliases_to_mailapi_pool()` `:529`：把别名拼成 `隐私邮箱----邮件 URL` 交给 `MicrosoftMailImportStrategy`（见 4.4.1），并顺带把 `mail_import_source` 切到 `mailapi`。拼行、选行、判重口径的前置逻辑拆在 `normalize_public_base_url()` `:421` / `resolve_public_base_url()` `:436` / `build_alias_mailapi_lines()` `:448` / `_list_pool_emails()` `:470` / `_resolve_pool_alias_ids()` `:479` / `_apply_mail_import_source()` `:509`，都是为了能脱离 HTTP 层单测 |
 | **登录会话的薄转发** | `start_login`/`login_state`/`verify_login`/`resend_login_code`/`send_login_sms`/`cancel_login` 全是一行转发给 `login_manager()`，不含逻辑 |
 
 ##### 4.2 主号会话的缓存与失效重登
@@ -5696,12 +5716,12 @@ if path.startswith("/api/auth/") or not path.startswith("/api/"):
 后果与含义：
 
 - 没有内存会话可"失效"，Cookie 失效表现为 Apple 回 401/403 → `session_expired`（HTTP 409）。**没有自动重登**——`ICloudCredentials` 里存的是 Cookie，不是密码，服务层没有能力静默重新走 SRP。用户必须重新走 `POST /icloud/login-sessions` 或 `POST /icloud/accounts/import-cookie`。
-- 重新登录时 `import_session()` 会 `load_credentials(row).merged_with(credentials)`（`services/icloud_service.py:265`）：新会话覆盖旧 Cookie，但**本次没显式提交 IMAP 密码时保留旧的 IMAP 配置**（`platforms/icloud/credentials.py:51`），用户不必每次重登都重填 App 专用密码。
+- 重新登录时 `import_session()` 会 `load_credentials(row).merged_with(credentials)`（`services/icloud_service.py:278`）：新会话覆盖旧 Cookie，但**本次没显式提交 IMAP 密码时保留旧的 IMAP 配置**（`platforms/icloud/credentials.py:51`），用户不必每次重登都重填 App 专用密码。
 - 每次操作都解密 + 建连，换来的是"不会用到过期的内存副本"和"多进程/多 worker 下天然一致"，代价是每次生成别名都有一次解密 + 一次 TLS 握手开销。
 
 ##### 4.3 `sync_error` 与 `last_sync_at` 的回写
 
-统一走 `_record_sync_error(account_id, message)`（`services/icloud_service.py:434`），一次写四个字段：
+统一走 `_record_sync_error(account_id, message)`（`services/icloud_service.py:655`），一次写四个字段：
 
 | 字段 | 写入规则 |
 |---|---|
@@ -5710,37 +5730,60 @@ if path.startswith("/api/auth/") or not path.startswith("/api/"):
 | `last_sync_at` | **无条件**写当前 UTC 时间（成功失败都写，语义是"最后一次尝试同步的时刻"） |
 | `updated_at` | 当前 UTC 时间 |
 
-调用点只有两处，都在 `sync_aliases()` 里：拉列表抛 `ICloudError` → 记错误后 `raise`（`services/icloud_service.py:336`）；全部 upsert 完成 → `_record_sync_error(account_id, "")`（`services/icloud_service.py:345`）。
+调用点只有两处，都在 `sync_aliases()` 里：拉列表抛 `ICloudError` → 记错误后 `raise`（`services/icloud_service.py:349`）；全部 upsert 完成 → `_record_sync_error(account_id, "")`（`services/icloud_service.py:358`）。
 
-另外 `import_session()` 会直接把 `row.sync_error = ""`、`row.status = "active"`（`services/icloud_service.py:269`），即**重新登录成功等于清除同步错误状态**。
+另外 `import_session()` 会直接把 `row.sync_error = ""`、`row.status = "active"`（`services/icloud_service.py:282`），即**重新登录成功等于清除同步错误状态**。
 
-`_account_to_dict()` 把 `sync_error`、`last_sync_at`（ISO 格式）、`credential_state`、`quota` 一起返回；`load_credentials` 失败时 `credential_state` 退化为 `{"credentials_unreadable": True}` 而不是抛异常（`services/icloud_service.py:131`），保证列表页不会因为一个坏主号整体 500。
+`_account_to_dict()` 把 `sync_error`、`last_sync_at`（ISO 格式）、`credential_state`、`quota` 一起返回；`load_credentials` 失败时 `credential_state` 退化为 `{"credentials_unreadable": True}` 而不是抛异常（`services/icloud_service.py:144`），保证列表页不会因为一个坏主号整体 500。
 
-##### 4.4 `api/icloud.py` 完整接口清单（17 个）
+##### 4.4 `api/icloud.py` 完整接口清单（18 个）
 
 路由前缀 `/icloud`，`main.py:127` 挂在 `/api` 下，所以实际路径都带 `/api/icloud`。下表路径列为 router 内相对路径。
 
 | # | 方法 | 路径 | 处理函数 | 作用 |
 |---|---|---|---|---|
-| 1 | POST | `/login-sessions` | `start_login` `api/icloud.py:131` | 用 Apple ID + 密码发起 SRP 登录；返回登录状态（可能是 `verification_required`）。完成时**顺带落库主号** |
-| 2 | GET | `/login-sessions/{login_id}` | `get_login` `api/icloud.py:152` | 轮询登录会话状态 |
-| 3 | POST | `/login-sessions/{login_id}/verify` | `verify_login` `api/icloud.py:160` | 提交双重认证 6 位验证码；成功即落库主号 |
-| 4 | POST | `/login-sessions/{login_id}/resend` | `resend_login_code` `api/icloud.py:168` | 重发验证码到受信设备 |
-| 5 | POST | `/login-sessions/{login_id}/sms` | `send_login_sms` `api/icloud.py:176` | 改用短信下发验证码（指定 `phone_id`） |
-| 6 | DELETE | `/login-sessions/{login_id}` | `cancel_login` `api/icloud.py:184` | 取消登录会话、销毁内存态。**唯一不做 ICloudError 捕获的接口** |
-| 7 | GET | `/accounts` | `list_accounts` `api/icloud.py:193` | 主号列表，含 `alias_count`、`quota`、`credential_state`、`sync_error` |
-| 8 | POST | `/accounts/import-cookie` | `import_cookie` `api/icloud.py:198` | 手工粘 Cookie（header 或 JSON）导入主号，同时可带 IMAP 配置 |
-| 9 | PATCH | `/accounts/{account_id}` | `update_account` `api/icloud.py:218` | 启用/停用主号（`{"enabled": bool}`） |
-| 10 | DELETE | `/accounts/{account_id}` | `delete_account` `api/icloud.py:226` | 删除主号，**级联删除其名下所有本地别名行**（不动 Apple 侧） |
-| 11 | POST | `/accounts/{account_id}/sync` | `sync_account` `api/icloud.py:235` | 从 Apple 拉全量别名合并到本地，返回 `fetched/created/updated/synced_at` |
-| 12 | GET | `/accounts/{account_id}/messages` | `account_messages` `api/icloud.py:243` | 主号 IMAP 收件，可选 `limit`（默认 50）与 `recipient`（按别名过滤） |
-| 13 | GET | `/aliases` | `list_aliases` `api/icloud.py:257` | 别名列表，可选 `account_id` 过滤；按 id 倒序；**返回 `share_token`** |
-| 14 | POST | `/aliases` | `generate_aliases` `api/icloud.py:262` | 批量生成 1–5 个别名（`count` 被 `Field(ge=1, le=5)` 卡住），逐个串行调 `generate_alias` |
-| 15 | POST | `/aliases/batch-delete` | `batch_delete_aliases` `api/icloud.py:277` | 批量删除；空 `ids` 直接 400；返回 `{ok, deleted, failed}` |
-| 16 | DELETE | `/aliases/{alias_id}` | `delete_alias` `api/icloud.py:285` | 删除单个别名，`remote=true`（默认）时同时注销 Apple 侧 |
-| 17 | GET | `/aliases/{alias_id}/messages` | `alias_messages` `api/icloud.py:294` | 取该别名收到的邮件（内部转成主号 IMAP + `recipient` 过滤） |
+| 1 | POST | `/login-sessions` | `start_login` `api/icloud.py:144` | 用 Apple ID + 密码发起 SRP 登录；返回登录状态（可能是 `verification_required`）。完成时**顺带落库主号** |
+| 2 | GET | `/login-sessions/{login_id}` | `get_login` `api/icloud.py:165` | 轮询登录会话状态 |
+| 3 | POST | `/login-sessions/{login_id}/verify` | `verify_login` `api/icloud.py:173` | 提交双重认证 6 位验证码；成功即落库主号 |
+| 4 | POST | `/login-sessions/{login_id}/resend` | `resend_login_code` `api/icloud.py:181` | 重发验证码到受信设备 |
+| 5 | POST | `/login-sessions/{login_id}/sms` | `send_login_sms` `api/icloud.py:189` | 改用短信下发验证码（指定 `phone_id`） |
+| 6 | DELETE | `/login-sessions/{login_id}` | `cancel_login` `api/icloud.py:197` | 取消登录会话、销毁内存态。**唯一不做 ICloudError 捕获的接口** |
+| 7 | GET | `/accounts` | `list_accounts` `api/icloud.py:206` | 主号列表，含 `alias_count`、`quota`、`credential_state`、`sync_error` |
+| 8 | POST | `/accounts/import-cookie` | `import_cookie` `api/icloud.py:211` | 手工粘 Cookie（header 或 JSON）导入主号，同时可带 IMAP 配置 |
+| 9 | PATCH | `/accounts/{account_id}` | `update_account` `api/icloud.py:231` | 启用/停用主号（`{"enabled": bool}`） |
+| 10 | DELETE | `/accounts/{account_id}` | `delete_account` `api/icloud.py:239` | 删除主号，**级联删除其名下所有本地别名行**（不动 Apple 侧） |
+| 11 | POST | `/accounts/{account_id}/sync` | `sync_account` `api/icloud.py:248` | 从 Apple 拉全量别名合并到本地，返回 `fetched/created/updated/synced_at` |
+| 12 | GET | `/accounts/{account_id}/messages` | `account_messages` `api/icloud.py:256` | 主号 IMAP 收件，可选 `limit`（默认 50）与 `recipient`（按别名过滤） |
+| 13 | GET | `/aliases` | `list_aliases` `api/icloud.py:270` | 别名列表，可选 `account_id` 过滤；按 id 倒序；**返回 `share_token`** |
+| 14 | POST | `/aliases` | `generate_aliases` `api/icloud.py:275` | 批量生成 1–5 个别名（`count` 被 `Field(ge=1, le=5)` 卡住），逐个串行调 `generate_alias` |
+| 15 | POST | `/aliases/batch-delete` | `batch_delete_aliases` `api/icloud.py:290` | 批量删除；空 `ids` 直接 400；返回 `{ok, deleted, failed}` |
+| 16 | POST | `/aliases/import-to-pool` | `import_aliases_to_pool` `api/icloud.py:298` | 把隐私邮箱导进 MailAPI URL 号池，等价于「导出 `mail_url` 再手工导入」。`ids` 为空则按 `account_id`（再缺省则全部主号）全量导；`origin` 是前端传来的浏览器地址栏 origin，用来拼免登录链接（见 4.4.1） |
+| 17 | DELETE | `/aliases/{alias_id}` | `delete_alias` `api/icloud.py:312` | 删除单个别名，`remote=true`（默认）时同时注销 Apple 侧 |
+| 18 | GET | `/aliases/{alias_id}/messages` | `alias_messages` `api/icloud.py:321` | 取该别名收到的邮件（内部转成主号 IMAP + `recipient` 过滤） |
 
-（第 18 个对外入口是免登录页 `GET /m/{share_token}`，在 `api/shared_mail.py:150`，不在本 router 内。）
+（第 19 个对外入口是免登录页 `GET /m/{share_token}`，在 `api/shared_mail.py:150`，不在本 router 内。）
+
+##### 4.4.1 16 号接口：隐私邮箱直接导进 MailAPI 号池
+
+免登录链接就是 `隐私邮箱----<面板地址>/m/<share_token>` 这一行，和前端导出 `mail_url` 格式逐字一致（`frontend/src/lib/icloud.ts:37` `formatAliasExport`），所以后端不需要另写一套落库逻辑，直接把拼好的文本喂给现成的导入器：
+
+```python
+strategy = mail_import_registry.get("microsoft")          # services/icloud_service.py:583
+response = strategy.execute(MailImportExecuteRequest(
+    type="microsoft", content="\n".join(lines),
+    enabled=bool(enabled), bind_to_config=False,          # 微软策略不读 bind_to_config，传 False 只为表意
+))
+```
+
+于是查重规则（`DuplicateMicrosoftMailboxRule` / `RegisteredMicrosoftMailboxRule`）、`account_type=mailapi_url` 落库、错误文案全部与手工导入**逐字节相同**，差别只在内容由后端按 `share_token` 现拼。关键取舍：
+
+| 点 | 做法 | 为什么 |
+|---|---|---|
+| 面板地址从哪来 | 前端 POST `window.location.origin` → `normalize_public_base_url()` 只留 `scheme://host[:port]`；不合法或没传则退回配置项 `public_base_url`（`services/icloud_service.py:421/436`） | 反代、内网穿透、换端口部署下服务端自己猜不出对外地址；导出的链接是要贴进号池、之后由注册任务去轮询的，存一个拼不起来的串比不存更糟 |
+| 没有 `share_token` 的老别名 | 整行跳过，进 `skipped_aliases`（与前端 `countExportableAliases` 同一口径） | 写成末尾空着的 `邮箱----` 只会让导入器报格式错 |
+| 勾选行与主号筛选 | `_resolve_pool_alias_ids()` **先按 `account_id` 缩范围再按 id 过滤** | 勾选的行可能是「全部主号」之外筛选出来的，不能拿 id 越界取别的主号的别名 |
+| 导入完成后切视图 | 只在 `summary.success > 0` 时把 `mail_import_source` 写成 `mailapi`（`_apply_mail_import_source()` `:509`） | 取号按视图筛 `account_type`（见 6.6），视图停在 Outlook 的话刚导进去的地址一个都取不到；但一条都没进池（全被查重挡下）时不该动用户的设置 |
+| 已在池里的怎么报 | 不算失败，但追加一句「N 个隐私邮箱早就在号池里了」（`:602`） | 否则用户点了没反应会以为是坏了 |
 
 **批量生成的标签编号**：`_alias_label(label, index, count)`（`api/icloud.py:100`）在 `count > 1` 时给标签加序号（`隐私邮箱 1`、`隐私邮箱 2`…），避免 Apple 侧一串同名地址分不清。
 
@@ -5751,7 +5794,7 @@ if path.startswith("/api/auth/") or not path.startswith("/api/"):
 `api/icloud.py:32` 的 `_ERROR_STATUS`，未列出的一律 502。两个刻意的决定值得记住：
 
 - **一律不用 401**。401 是面板自身的登录态语义，前端见到就清 token 跳登录页。iCloud 主号凭据问题是"Apple 那边不认"，不是"你没登录本面板"，用 401 表达会让用户在验证弹窗里点一下保存就被踢出去。所以 `session_expired`/`credentials_unreadable` 都映射成 **409**。
-- **`upstream_rejected` → 422 而不是 5xx**。Apple 收到了并明确拒绝，属于请求语义问题；更关键的是 **Cloudflare 会把 5xx 的响应体整个换成自己的错误页**，Apple 到底说了什么就全丢了（测试 `tests/test_icloud_api.py:166` 就叫 `test_apple_rejection_stays_in_4xx_so_the_reason_survives`）。
+- **`upstream_rejected` → 422 而不是 5xx**。Apple 收到了并明确拒绝，属于请求语义问题；更关键的是 **Cloudflare 会把 5xx 的响应体整个换成自己的错误页**，Apple 到底说了什么就全丢了（测试 `tests/test_icloud_api.py:175` 就叫 `test_apple_rejection_stays_in_4xx_so_the_reason_survives`）。
 
 | 错误码 | 状态 | 错误码 | 状态 |
 |---|---|---|---|
@@ -5849,8 +5892,8 @@ iCloud 不是传统"注册"。这里的"注册"**= 从已登录主号生成一�
 | `tests/test_icloud_web_client.py` | validate 解析、HME 各动作的请求构造与响应解析 |
 | `tests/test_icloud_hme_rejection_handling.py` | 重试白名单、原始信封入日志、构建号降级可见 |
 | `tests/test_icloud_mailbox.py` | IMAP 参数校验、投递头过滤、正文与时间解析 |
-| `tests/test_icloud_service.py` | 配额窗口、upsert 去重与回写、sync_error 记录 |
-| `tests/test_icloud_api.py` | 17 个接口的状态码映射（429、503、**422 保留 Apple 原因**）、批量删除的"一条失败不拖累其余" |
+| `tests/test_icloud_service.py` | 配额窗口、upsert 去重与回写、sync_error 记录；**导入 MailAPI 号池**：只留 `scheme://host` 的地址归一化、没有 `share_token` 的别名整行跳过、落库为 `mailapi_url` 且视图切到 `mailapi`、缺面板地址时给出人话原因、已在池里的不重复导、选不到别名时带原因、**不越界取别的主号的别名**、地址不合法时退回配置项 `public_base_url` |
+| `tests/test_icloud_api.py` | 18 个接口的状态码映射（429、503、**422 保留 Apple 原因**）、批量删除的"一条失败不拖累其余"；`POST /aliases/import-to-pool` 的成功路径与缺地址路径 |
 | `tests/test_icloud_plugin.py` | `register` 生成别名并记录归属、**不消耗邮箱池**、`check_valid` 要求上游仍 active |
 | `tests/test_shared_mail_page.py` | token 不可猜、**面板设了密码也能免登录打开**、不可信 HTML 无法执行、空收件箱不报错、未知 token 是 404 页、老数据迁移补 token |
 | `tests/fixtures/shared_mail_chatgpt_otp.html` | 分享页渲染 ChatGPT OTP 邮件的黄金样本（含 `noindex`、暗色样式、iframe 沙箱结构） |
@@ -5904,7 +5947,7 @@ iCloud 不是传统"注册"。这里的"注册"**= 从已登录主号生成一�
 
 | 模式 | 来源 | 行为 |
 | --- | --- | --- |
-| `tag`(默认) | config 键 `external_apps_update_mode`,`_update_mode()` 归一化,非 `branch` 一律当 `tag`(`services/external_apps.py:155-157`);默认值兜底在 `api/config.py:173-174` | 取 `git for-each-ref refs/tags --sort=-version:refname` 第一个匹配 semver 正则的 tag(`:206-214`,正则在 `:22`),然后 `checkout --force <tag>` + `reset --hard` + `clean -fd`(`:217-224`) |
+| `tag`(默认) | config 键 `external_apps_update_mode`,`_update_mode()` 归一化,非 `branch` 一律当 `tag`(`services/external_apps.py:155-157`);默认值兜底在 `api/config.py:177-178` | 取 `git for-each-ref refs/tags --sort=-version:refname` 第一个匹配 semver 正则的 tag(`:206-214`,正则在 `:22`),然后 `checkout --force <tag>` + `reset --hard` + `clean -fd`(`:217-224`) |
 | `branch` | 同一配置键设成 `branch` | 直接走分支 HEAD |
 | tag 模式但仓库无 semver tag | `_latest_semver_tag()` 返回空 → `_sync_repo_to_latest_semver_tag` 返回 False | **自动降级**到分支 HEAD |
 
@@ -5964,7 +6007,7 @@ iCloud 不是传统"注册"。这里的"注册"**= 从已登录主号生成一�
 | POST | `/api/integrations/services/{name}/stop` | `api/integrations.py:56-58` |
 | POST | `/api/integrations/backfill` | 批量补传,见下一节 |
 
-前端入口在 `frontend/src/pages/Settings.tsx:881`(读列表)、`1029-1113`(启停/安装/卸载/回填按钮)。安装模式切换写的是 `external_apps_update_mode` 配置(`frontend/src/pages/Settings.tsx:931`)。
+前端入口在 `frontend/src/pages/Settings.tsx:886`(读列表)、`1029-1113`(启停/安装/卸载/回填按钮)。安装模式切换写的是 `external_apps_update_mode` 配置(`frontend/src/pages/Settings.tsx:936`)。
 
 
 ### CLIProxyAPI / CPA 同步
@@ -6060,7 +6103,7 @@ CLIProxyAPI 用"一个 JSON 文件 = 一个可用凭证"的模型,管理接口 `
   6. **上传后复核**:再同步一次,若远端依旧 missing 则整体判失败,消息"上传后远端仍未发现 auth-file"(`:358-366`)
   7. 全程 `commit=False`,只在每个分支出口按需 `session.commit()` + `refresh`
 - 汇总:`api/integrations.py:63,92-121` 统计 `total/success/failed/skipped` 和逐条 `items[].results`;单账号抛异常时 `session.rollback()` 并记 `{"name":"error"}`
-- 前端只传 `{platforms:["chatgpt"]}`,不带筛选(`frontend/src/pages/Settings.tsx:914-929`)
+- 前端只传 `{platforms:["chatgpt"]}`,不带筛选(`frontend/src/pages/Settings.tsx:919-934`)
 
 #### 同步状态如何落库
 
@@ -6439,8 +6482,8 @@ api/payments.py ──► services/payment_channels/service.py
 | 位置 | 值 |
 | --- | --- |
 | `api/contribution.py:14` | `DEFAULT_CONTRIBUTION_SERVER_URL = "http://new.xem8k5.top:7317/"` |
-| `api/config.py:167-168` | 配置项 `contribution_server_url` 缺省也填同一个地址 |
-| `api/config.py:171-172` | `custom_contribution_url` 缺省 `http://127.0.0.1:5000` |
+| `api/config.py:171-172` | 配置项 `contribution_server_url` 缺省也填同一个地址 |
+| `api/config.py:175-176` | `custom_contribution_url` 缺省 `http://127.0.0.1:5000` |
 
 注意这是一个**明文 HTTP 的第三方域名**,写在两处代码里。`_resolve_server_url`(`api/contribution.py:47-53`)在用户没配时无声地落到这个默认值,而且给不带 scheme 的输入自动补 `http://`。
 
@@ -6488,13 +6531,13 @@ api/payments.py ──► services/payment_channels/service.py
 
 | 事实 | 依据 |
 | --- | --- |
-| 开关键 `contribution_enabled`,默认 `"0"` | `api/config.py:165-166`(读配置时兜底写 `0`)、`services/external_sync.py:60`(`config_store.get("contribution_enabled", "0")`) |
+| 开关键 `contribution_enabled`,默认 `"0"` | `api/config.py:169-170`(读配置时兜底写 `0`)、`services/external_sync.py:60`(`config_store.get("contribution_enabled", "0")`) |
 | 布尔解析口径 | `_is_config_enabled` 只认 `1/true/yes/on/enabled`,空串走 `default=False`(`services/external_sync.py:15-19`) |
 | 关闭后行为 | `sync_account()` 跳过整个贡献分支,继续按 CPA / CodexProxy / Sub2API 各自开关走(`services/external_sync.py:61,165+`) |
-| 关闭方式 | `PUT /api/config` 把 `contribution_enabled` 设为 `0`(该键在白名单 `CONFIG_KEYS` 里,`api/config.py:122`);或直接不配 `contribution_server_url`,那样 codex 模式会 fail-fast 报"Contribution 服务器地址未配置"(`services/external_sync.py:150-154`) |
+| 关闭方式 | `PUT /api/config` 把 `contribution_enabled` 设为 `0`(该键在白名单 `CONFIG_KEYS` 里,`api/config.py:126`);或直接不配 `contribution_server_url`,那样 codex 模式会 fail-fast 报"Contribution 服务器地址未配置"(`services/external_sync.py:150-154`) |
 | 代理接口无法"关" | `/api/contribution/*` 四个路由无条件注册(`main.py:126`),但它们是拉取型接口,需要前端主动调,不会自动外发凭证 |
 
-相关配置键一览(全部在 `api/config.py:122-127` 白名单内):
+相关配置键一览(全部在 `api/config.py:126-131` 白名单内):
 
 | 键 | 默认 | 作用 |
 | --- | --- | --- |
@@ -6821,7 +6864,7 @@ compose 层还有几个只用于 bind 路径/端口拼装的变量,Python 侧不
 
 #### 1. 贡献模式会把完整凭证发到硬编码的第三方明文 HTTP 地址
 
-`http://new.xem8k5.top:7317/` 同时硬编码在 `api/contribution.py:14` 和 `api/config.py:168`。开启 `contribution_enabled` 后,每个注册成功的账号的 email + access_token + refresh_token + id_token 会被上传(`services/external_sync.py:119-163`)。默认关闭,且前端没有对应 UI —— 但这也意味着接手者可能既不知道它存在,也不知道它已被某个 `.env` / 环境变量打开(config_store 有环境变量回退,见环境变量章节)。**明文 HTTP,凭证在网络上无加密传输。**
+`http://new.xem8k5.top:7317/` 同时硬编码在 `api/contribution.py:14` 和 `api/config.py:172`。开启 `contribution_enabled` 后,每个注册成功的账号的 email + access_token + refresh_token + id_token 会被上传(`services/external_sync.py:119-163`)。默认关闭,且前端没有对应 UI —— 但这也意味着接手者可能既不知道它存在,也不知道它已被某个 `.env` / 环境变量打开(config_store 有环境变量回退,见环境变量章节)。**明文 HTTP,凭证在网络上无加密传输。**
 
 #### 2. `.env` / 环境变量能静默改写任意业务配置
 
@@ -7894,11 +7937,11 @@ ChatGPT 专属三个开关（注册方式 / Token 方案 / 绑定 2FA）不入�
 
 ## 十五、前端设置页、iCloud 页与付费页
 
-### 三、全局配置页 Settings.tsx(1648 行)
+### 三、全局配置页 Settings.tsx(1653 行)
 
 #### 3.1 整体形态:声明式配置表 + 命令式面板
 
-这一页有两套并存的机制,理解它是读懂 1648 行的关键:
+这一页有两套并存的机制,理解它是读懂 1653 行的关键:
 
 | 机制 | 适用范围 | 数据流 |
 | --- | --- | --- |
@@ -7909,15 +7952,15 @@ ChatGPT 专属三个开关（注册方式 / Token 方案 / 绑定 2FA）不入�
 
 | 组件 | 位置 | 职责 |
 | --- | --- | --- |
-| `CFWorkerDomainPoolSection` | `frontend/src/pages/Settings.tsx:602` | CF Worker 多域名池的增删与启停(数组型配置,通用字段渲染表达不了) |
-| `SmsProbePanel` | `frontend/src/pages/Settings.tsx:739` | 「测试余额」「查询国家排名」两个即时探测动作 |
-| `SolverStatus` | `frontend/src/pages/Settings.tsx:800` | 本地 Turnstile Solver 运行状态与重启 |
-| `IntegrationsPanel` | `frontend/src/pages/Settings.tsx:855` | 外部插件安装/更新/启停/卸载 |
-| `SecurityPanel` | `frontend/src/pages/Settings.tsx:1128` | 面板访问密码与后台 2FA |
+| `CFWorkerDomainPoolSection` | `frontend/src/pages/Settings.tsx:607` | CF Worker 多域名池的增删与启停(数组型配置,通用字段渲染表达不了) |
+| `SmsProbePanel` | `frontend/src/pages/Settings.tsx:744` | 「测试余额」「查询国家排名」两个即时探测动作 |
+| `SolverStatus` | `frontend/src/pages/Settings.tsx:805` | 本地 Turnstile Solver 运行状态与重启 |
+| `IntegrationsPanel` | `frontend/src/pages/Settings.tsx:860` | 外部插件安装/更新/启停/卸载 |
+| `SecurityPanel` | `frontend/src/pages/Settings.tsx:1133` | 面板访问密码与后台 2FA |
 
 #### 3.2 九个 Tab 与配置分区
 
-`TAB_ITEMS` 共 9 个 Tab(`frontend/src/pages/Settings.tsx:94-425`),其中 2 个是纯自定义面板(`sections: []`):
+`TAB_ITEMS` 共 9 个 Tab(`frontend/src/pages/Settings.tsx:94-430`),其中 2 个是纯自定义面板(`sections: []`):
 
 | Tab key | 标签 | 分区 | 关键配置项 |
 | --- | --- | --- | --- |
@@ -7927,7 +7970,7 @@ ChatGPT 专属三个开关（注册方式 / Token 方案 / 绑定 2FA）不入�
 | `chatgpt` | ChatGPT | CPA 面板 / Sub2API 面板 / CPA 自动维护 | `cpa_*`、`sub2api_*`、`cpa_cleanup_*`(自动维护含阈值、并发、延迟) |
 | `sms` | 手机接码 | 接码平台 / 国家选择 / 租号与重试 | 见下表 |
 | `cliproxyapi` | CLIProxyAPI | 管理面板 | `cliproxyapi_base_url`、`cliproxyapi_management_key` |
-| `icloud` | iCloud | 隐私邮箱默认参数 | `icloud_region`、`icloud_alias_label`、`icloud_alias_note` |
+| `icloud` | iCloud | 隐私邮箱默认参数 | `icloud_region`、`icloud_alias_label`、`icloud_alias_note`、`public_base_url`(面板访问地址,留空则用浏览器地址栏的地址;只在服务端拿不到前端 origin 时才用到,见 4.4.1) |
 | `integrations` | 插件 | — (纯 `IntegrationsPanel`) | 不走 Form |
 | `security` | 安全 | — (纯 `SecurityPanel`) | 不走 Form |
 
@@ -7955,7 +7998,7 @@ ChatGPT 专属三个开关（注册方式 / Token 方案 / 绑定 2FA）不入�
 
 #### 3.3 保存机制:整页一次提交
 
-保存是**整页级**的,不是逐项。`save()`(`frontend/src/pages/Settings.tsx:1473`)一次性把整个 Form 的值 `PUT /api/config`:
+保存是**整页级**的,不是逐项。`save()`(`frontend/src/pages/Settings.tsx:1478`)一次性把整个 Form 的值 `PUT /api/config`:
 
 ```ts
 await apiFetch('/config', { method: 'PUT', body: JSON.stringify({ data: values }) })
@@ -8060,6 +8103,8 @@ type MailImportProviderType = 'applemail' | 'microsoft'
 
 微软类之所以要再分三种源,是因为收信后端不同:Outlook/Hotmail 走 OAuth refresh_token 换 access_token,MailAPI URL 走第三方中转地址。这个"一个 provider 选项 + 一个子源选项"的两级结构,是 `Settings.tsx` 里 `resolveEffectiveMailProvider` 存在的原因(见 3.6)。
 
+> MailAPI URL 这一源除了手工粘 `邮箱----取码地址`,还可以从 iCloud 页一键导入隐私邮箱(`POST /api/icloud/aliases/import-to-pool`,见 04 章 4.4.1)——它走的就是本面板同一条 `MicrosoftMailImportStrategy` 流水线,只是内容由后端拼。
+
 #### 4.2 交互流程
 
 1. 顶部 `Select` 选 provider 类型(`frontend/src/components/settings/MailImportPanel.tsx:614`),`loading` 态由 `loadingProviders` 驱动,选项从后端 `/api/mail-imports/providers` 拉。
@@ -8072,22 +8117,22 @@ type MailImportProviderType = 'applemail' | 'microsoft'
 
 ---
 
-### 五、iCloud 页 ICloud.tsx(898 行)
+### 五、iCloud 页 ICloud.tsx(1007 行)
 
 #### 5.1 页面骨架
 
-顶部三个动作按钮(`frontend/src/pages/ICloud.tsx:365-372`):**应用内登录**(SRP 全流程)、**手工导入 Cookie**、刷新。下面是两个 Tab:
+顶部三个动作按钮(`frontend/src/pages/ICloud.tsx:369-376`):**应用内登录**(SRP 全流程)、**手工导入 Cookie**、刷新。下面是两个 Tab:
 
 | Tab key | 标签 | 内容 |
 | --- | --- | --- |
 | `accounts` | `主号管理 (n)` | Apple ID 主号表:状态、区域、启停、同步、删除 |
-| `aliases` | `隐私邮箱 (n)` | 别名表:地址、所属主号、标签/备注、收件、删除;顶部有批量生成、导出、批量删除 |
+| `aliases` | `隐私邮箱 (n)` | 别名表:地址、所属主号、标签/备注、收件、删除;顶部有批量生成、导出、**导入 MailAPI 号池**、批量删除 |
 
-收件箱不是第三个 Tab,而是从别名行点「收件」弹出的 `AliasInboxDrawer`(`frontend/src/pages/ICloud.tsx:732`)。
+收件箱不是第三个 Tab,而是从别名行点「收件」弹出的 `AliasInboxDrawer`(`frontend/src/pages/ICloud.tsx:841`)。
 
 #### 5.2 数据加载
 
-`load()`(`frontend/src/pages/ICloud.tsx:89`)用 `Promise.all` 并发拉主号与别名两个列表:
+`load()`(`frontend/src/pages/ICloud.tsx:93`)用 `Promise.all` 并发拉主号与别名两个列表:
 
 ```ts
 const [nextAccounts, nextAliases] = await Promise.all([
@@ -8096,9 +8141,9 @@ const [nextAccounts, nextAliases] = await Promise.all([
 ])
 ```
 
-`filterAccountId` 变化会触发重新加载(`useCallback` 依赖),同时有一个专门的 `useEffect` 在切换主号筛选时清空已选行(`frontend/src/pages/ICloud.tsx:128`),注释说明了原因:换筛选后原来选中的行已不在表里,留着只会误删。这类细节在这一页有多处,是被真实踩过的坑。
+`filterAccountId` 变化会触发重新加载(`useCallback` 依赖),同时有一个专门的 `useEffect` 在切换主号筛选时清空已选行(`frontend/src/pages/ICloud.tsx:132`),注释说明了原因:换筛选后原来选中的行已不在表里,留着只会误删。这类细节在这一页有多处,是被真实踩过的坑。
 
-所有单行动作统一走 `withBusy(id, action, successText)`(`frontend/src/pages/ICloud.tsx:110`):置 `busyId` → 执行 → 成功提示 → **重新 `load()` 全量刷新** → 清 `busyId`。这是全页统一的写后刷新策略,简单但每次动作都要重拉两个列表。
+所有单行动作统一走 `withBusy(id, action, successText)`(`frontend/src/pages/ICloud.tsx:114`):置 `busyId` → 执行 → 成功提示 → **重新 `load()` 全量刷新** → 清 `busyId`。这是全页统一的写后刷新策略,简单但每次动作都要重拉两个列表。
 
 #### 5.3 登录弹窗的两条路径
 
@@ -8130,13 +8175,13 @@ const [nextAccounts, nextAliases] = await Promise.all([
 
 **取消语义**:关闭弹窗时若登录未完成,会 `cancelICloudLogin(login_id)` 通知后端释放这次握手(`:87-92`),`.catch(() => {})` 静默忽略失败。
 
-##### 路径二:Cookie 导入(`CookieImportModal`,`frontend/src/pages/ICloud.tsx:512`)
+##### 路径二:Cookie 导入(`CookieImportModal`,`frontend/src/pages/ICloud.tsx:530`)
 
 跳过 SRP 与双重认证,直接粘贴浏览器导出的 iCloud Cookie。适用于 SRP 路径受阻或已有浏览器会话的场景。
 
 #### 5.4 别名生成与限流提示
 
-`GenerateAliasModal`(`frontend/src/pages/ICloud.tsx:585`)的字段:主号(必填)、生成数量(默认 1)、标签(可选)、备注(可选)。
+`GenerateAliasModal`(`frontend/src/pages/ICloud.tsx:603`)的字段:主号(必填)、生成数量(默认 1)、标签(可选)、备注(可选)。
 
 限流在**前端就硬约束**了:
 
@@ -8144,11 +8189,11 @@ const [nextAccounts, nextAliases] = await Promise.all([
 <InputNumber min={1} max={ICLOUD_HOURLY_ALIAS_LIMIT} ... />
 ```
 
-`ICLOUD_HOURLY_ALIAS_LIMIT = 5` 定义在 `frontend/src/lib/icloud.ts:7`,提示文案是"Apple 限制每个主号每滚动小时最多 5 个"。同时弹窗会读该主号的 `quota` 字段展示剩余额度(`frontend/src/pages/ICloud.tsx:621`)。**前端上限只是体验优化,真正的限流在后端按主号维度计数**(见 06 章)。
+`ICLOUD_HOURLY_ALIAS_LIMIT = 5` 定义在 `frontend/src/lib/icloud.ts:7`,提示文案是"Apple 限制每个主号每滚动小时最多 5 个"。同时弹窗会读该主号的 `quota` 字段展示剩余额度(`frontend/src/pages/ICloud.tsx:639`)。**前端上限只是体验优化,真正的限流在后端按主号维度计数**(见 06 章)。
 
 #### 5.5 别名导出与分享链接
 
-别名表顶部的导出支持两种格式(`frontend/src/pages/ICloud.tsx:431-432`),都是 `----` 分隔的两列:
+别名表顶部的导出支持两种格式(`frontend/src/pages/ICloud.tsx:435-436`),都是 `----` 分隔的两列:
 
 | 模式 | 一行长什么样 |
 | --- | --- |
@@ -8159,11 +8204,34 @@ const [nextAccounts, nextAliases] = await Promise.all([
 
 `aliasMailUrl` 是把别名的 `share_token` 拼成**免登录邮件页链接**——这个链接本身就是权限凭证,导出成文本即意味着凭证离开了系统,是需要注意的一点(后端侧风险见 06 章)。
 
+#### 5.5.1 「导入 MailAPI 号池」按钮与 `AliasPoolImportModal`
+
+导出按钮右边还有一个**导入 MailAPI 号池**按钮(`frontend/src/pages/ICloud.tsx:444-450`,`ImportOutlined`),`disabled` 条件与导出一致(`targetAliases.length === 0`)——它做的事就是"导出 `mail_url` 再手工粘进邮箱导入面板"的自动化版本,省掉中间那次下载与上传:
+
+```ts
+const response = await importICloudAliasesToPool({
+  ids: aliases.map((alias) => alias.id),
+  account_id: accountId,          // 全量导时带上主号筛选，避免把别的主号的别名一起塞进去
+  origin: window.location.origin, // 反代/穿透/换端口时服务端猜不到对外地址
+})
+```
+
+弹窗组件 `AliasPoolImportModal`(`frontend/src/pages/ICloud.tsx:678`)结构:
+
+| 部分 | 内容 |
+| --- | --- |
+| 说明 | 「一行一条 `隐私邮箱----邮件 URL`,等价于先导出再手工导入」+ 导入后设置里的导入类型会自动切到 MailAPI URL |
+| 计数 | 待导入 `aliases.length` 个;可导入数由 `countExportableAliases(aliases, 'mail_url')` 算出,不足时提示「N 个还没有邮件 URL,会被跳过」——与导出用同一个纯函数,两边口径不会漂 |
+| 结果 | `Alert` 显示「导入完成:成功 X / 失败 Y / 跳过 Z」,`errors` 用 `<pre>` 逐行铺开(含"早就在号池里了"那类提示) |
+| 收尾 | 明确一句「邮件链接就是权限,导进号池等于把它交给了注册任务」 |
+
+`open` 变化时清空上一次结果(`useEffect` + `setResult(null)`),`destroyOnHidden` 让弹窗关闭即卸载。成功提示按 `imported > 0` 分岔:有导入走 `message.success`,一条没进则 `message.warning('没有导入新的隐私邮箱,看看下面的原因')`。
+
 #### 5.6 收件箱抽屉
 
-`AliasInboxDrawer`(`frontend/src/pages/ICloud.tsx:732`)是一次性拉取而非增量:`listICloudAliasMessages(alias.id)` 拉全量,之后的搜索是**纯前端过滤**(`frontend/src/pages/ICloud.tsx:762`),匹配主题、发件人名、发件人邮箱、摘要、纯文本正文五个字段。
+`AliasInboxDrawer`(`frontend/src/pages/ICloud.tsx:841`)是一次性拉取而非增量:`listICloudAliasMessages(alias.id)` 拉全量,之后的搜索是**纯前端过滤**(`frontend/src/pages/ICloud.tsx:871`),匹配主题、发件人名、发件人邮箱、摘要、纯文本正文五个字段。
 
-响应式行为(`frontend/src/pages/ICloud.tsx:773-775`):
+响应式行为(`frontend/src/pages/ICloud.tsx:882-884`):
 
 - **宽屏**(`screens.md`):左列表右详情双栏,默认自动摊开第一封,省一次点击。
 - **窄屏**:列表优先,点了才进详情。
@@ -8191,8 +8259,9 @@ const [nextAccounts, nextAliases] = await Promise.all([
 | `deleteICloudAlias(id, remote = true)` | 删单个别名,`remote` 控制是否同时删 Apple 侧 |
 | `batchDeleteICloudAliases(...)` | 批量删除,返回 `ICloudBatchDeleteResult` |
 | `listICloudAliasMessages(aliasId)` | 拉别名收件箱 |
+| `importICloudAliasesToPool({ ids?, account_id?, origin?, enabled? })` | 把隐私邮箱导进 MailAPI URL 号池,返回 `ICloudAliasPoolImportResult`(`total` / `imported` / `skipped` / `failed` / `skipped_aliases` / `errors` / `source`);等价于导出 `mail_url` 再导入 |
 
-删除文案值得注意:删主号提示"将同时移除本地记录的隐私邮箱,**不会删除 iCloud 上游地址**"(`frontend/src/pages/ICloud.tsx:270`);删别名提示"会先在 iCloud 停用并删除该地址,**删除后无法恢复**"(`frontend/src/pages/ICloud.tsx:344`)。两者对上游的影响相反,文案区分得很清楚。
+删除文案值得注意:删主号提示"将同时移除本地记录的隐私邮箱,**不会删除 iCloud 上游地址**"(`frontend/src/pages/ICloud.tsx:274`);删别名提示"会先在 iCloud 停用并删除该地址,**删除后无法恢复**"(`frontend/src/pages/ICloud.tsx:348`)。两者对上游的影响相反,文案区分得很清楚。
 
 ---
 
@@ -8265,11 +8334,11 @@ useEffect / useCallback 里 apiFetch 拉取
 
 | 问题 | 事实 | 影响 |
 | --- | --- | --- |
-| **超大单文件** | `Accounts.tsx` 1919 行、`Settings.tsx` 1648 行、`ICloud.tsx` 898 行、`MailImportPanel.tsx` 780 行、`RegisterTaskPage.tsx` 738 行 | 单文件内多个未导出的子组件(如 `ICloud.tsx` 里就有 6 个),无法单独测试或复用;合并冲突概率高 |
+| **超大单文件** | `Accounts.tsx` 1919 行、`Settings.tsx` 1653 行、`ICloud.tsx` 1007 行、`MailImportPanel.tsx` 780 行、`RegisterTaskPage.tsx` 738 行 | 单文件内多个未导出的子组件(如 `ICloud.tsx` 里就有 7 个,含 `AliasPoolImportModal`),无法单独测试或复用;合并冲突概率高 |
 | **`any` 逃逸** | `Accounts.tsx` 28 处、`Settings.tsx` 14 处、`Proxies.tsx` 7 处、`Dashboard.tsx` 3、`Login.tsx` 2、`RunningTasks.tsx` 1、`RegisterTaskPage.tsx` 1、`App.tsx` 1(共 57 处) | 后端返回结构变更时 TS 完全无法报警。集中在账号页与设置页——恰好是后端字段最多、`extra_json` 最灵活的两处,是最需要类型保护的地方 |
 | **无 ErrorBoundary** | 全仓零个 | 任一渲染期异常会白屏整个 SPA,而不是降级到某个区块 |
 | **写后全量刷新** | `withBusy` 模式在每次单行动作后重拉整个列表 | 别名/账号列表大时,一次删除要付两次全表查询的代价;没有乐观更新 |
-| **前端硬编码默认值** | `frontend/src/pages/Settings.tsx:1389-1412` 给 10 个配置字段填默认值 | 同一默认值前后端各存一份,易不一致 |
+| **前端硬编码默认值** | `frontend/src/pages/Settings.tsx:1394-1417` 给 10 个配置字段填默认值 | 同一默认值前后端各存一份,易不一致 |
 | **类型转换分散** | `configValueParsers.ts` 只有 1 个函数(10 行),其余转换散落在 `Settings.tsx` 内部 | 加新配置类型时要记得在加载侧和保存侧各改一处,漏一处就是脏值 |
 | **一次拉 1000 条** | `frontend/src/pages/Payments.tsx:63` 用 `page_size=1000` 拉全部 ChatGPT 账号做前端搜索 | 账号量上万后会明显卡顿,应改后端搜索 |
 | **收件箱全量拉取** | `AliasInboxDrawer` 一次拉完所有邮件再前端过滤 | 与后端的渐进式加载理念不一致,邮件多时首屏慢 |

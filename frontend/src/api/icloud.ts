@@ -197,11 +197,38 @@ export interface ICloudBatchDeleteResult {
   failed: { alias_id: number; code: string; message: string }[]
 }
 
+export interface ICloudAliasPoolImportResult {
+  /** 参与导入的行数（含被查重挡下的） */
+  total: number
+  imported: number
+  /** 没有免登录链接、整行跳过的别名数 */
+  skipped: number
+  failed: number
+  skipped_aliases: string[]
+  errors: string[]
+  source: string
+}
+
 export function batchDeleteICloudAliases(
   ids: number[],
   remote = true,
 ): Promise<ICloudBatchDeleteResult> {
   return post<ICloudBatchDeleteResult>('/icloud/aliases/batch-delete', { ids, remote })
+}
+
+/**
+ * 把隐私邮箱导入 MailAPI URL 号池，等价于「导出 隐私邮箱----邮件 URL 再导入」。
+ *
+ * `ids` 为空表示按 `accountId`（再缺省则全部主号）全量导；`origin` 用浏览器地址栏的
+ * origin，后端拿它拼免登录链接——反代、内网穿透、换端口都能拼对。
+ */
+export function importICloudAliasesToPool(payload: {
+  ids?: number[]
+  account_id?: number
+  origin?: string
+  enabled?: boolean
+}): Promise<ICloudAliasPoolImportResult> {
+  return post<ICloudAliasPoolImportResult>('/icloud/aliases/import-to-pool', payload)
 }
 
 /**

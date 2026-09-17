@@ -44,6 +44,7 @@ class _StubWebClient:
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", base64.b64encode(os.urandom(32)).decode())
 
+    import core.config_store as config_store_module
     import core.db as db
     import core.secret_box as secret_box_module
     from api.icloud import router
@@ -53,7 +54,14 @@ def client(tmp_path, monkeypatch):
     engine = create_engine(f"sqlite:///{tmp_path / 'icloud.db'}")
     SQLModel.metadata.create_all(engine)
     monkeypatch.setattr(db, "engine", engine)
+    # 导入 MailAPI 号池要读写配置项（public_base_url / mail_import_source），
+    # 不指过来的话会落到真实的 account_manager.db 上
+    monkeypatch.setattr(config_store_module, "engine", engine)
     monkeypatch.setattr(icloud_service, "engine", engine)
+    # 落库是走邮件导入策略做的，它自己也持有一份 engine 引用
+    import services.mail_imports.providers as mail_import_providers
+
+    monkeypatch.setattr(mail_import_providers, "engine", engine)
     monkeypatch.setattr(secret_box_module, "secret_box", SecretBox())
     monkeypatch.setattr(icloud_service, "secret_box", secret_box_module.secret_box)
 
@@ -81,6 +89,7 @@ def client(tmp_path, monkeypatch):
     app.include_router(router, prefix="/api")
     test_client = TestClient(app)
     test_client.stub = stub
+    test_client.engine = engine
     return test_client
 
 
@@ -268,3 +277,43 @@ def test_unknown_account_and_alias_map_to_http_404(client):
     assert client.post("/api/icloud/accounts/999/sync").status_code == 404
     assert client.request("DELETE", "/api/icloud/aliases/999").status_code == 404
     assert client.get("/api/icloud/aliases/999/messages").status_code == 404
+
+
+def test_import_to_pool_puts_the_aliases_into_the_mailapi_pool(client):
+    """等价于导出 mail_url 再手工导入，只是省掉了中间那一步。"""
+    account = _import_account(client)
+    created = client.post(
+        "/api/icloud/aliases", json={"account_id": account["id"], "count": 2}
+    ).json()["items"]
+
+    response = client.post(
+        "/api/icloud/aliases/import-to-pool",
+        json={"ids": [item["id"] for item in created], "origin": "https://reg.example.com"},
+    )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert (body["imported"], body["failed"], body["skipped"]) == (2, 0, 0)
+
+    from sqlmodel import Session, select
+
+    from core.db import OutlookAccountModel
+
+    with Session(client.engine) as session:
+        rows = session.exec(select(OutlookAccountModel)).all()
+    assert {row.account_type for row in rows} == {"mailapi_url"}
+    assert {row.mailapi_url for row in rows} == {
+        f"https://reg.example.com/m/{item['share_token']}" for item in created
+    }
+
+
+def test_import_to_pool_without_a_base_url_reports_why(client):
+    account = _import_account(client)
+    alias = client.post("/api/icloud/aliases", json={"account_id": account["id"]}).json()["items"][0]
+
+    response = client.post("/api/icloud/aliases/import-to-pool", json={"ids": [alias["id"]]})
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["imported"] == 0
+    assert "无法确定面板访问地址" in body["errors"][0]

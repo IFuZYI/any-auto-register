@@ -29,6 +29,7 @@ import {
   DeleteOutlined,
   DownOutlined,
   DownloadOutlined,
+  ImportOutlined,
   InboxOutlined,
   LinkOutlined,
   LoginOutlined,
@@ -43,6 +44,7 @@ import {
   deleteICloudAccount,
   deleteICloudAlias,
   generateICloudAliases,
+  importICloudAliasesToPool,
   importICloudCookie,
   listICloudAccounts,
   listICloudAliasMessages,
@@ -51,6 +53,7 @@ import {
   syncICloudAccount,
   type ICloudAccount,
   type ICloudAlias,
+  type ICloudAliasPoolImportResult,
   type ICloudMessage,
 } from '@/api/icloud'
 import { ICloudLoginModal } from '@/components/icloud/ICloudLoginModal'
@@ -85,6 +88,7 @@ export default function ICloudPage() {
   const [inboxAlias, setInboxAlias] = useState<ICloudAlias | null>(null)
   const [selectedAliasIds, setSelectedAliasIds] = useState<React.Key[]>([])
   const [batchDeleting, setBatchDeleting] = useState(false)
+  const [poolImportOpen, setPoolImportOpen] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -436,6 +440,13 @@ export default function ICloudPage() {
                   >
                     <DownloadOutlined /> 导出 ({targetAliases.length})
                   </Dropdown.Button>
+                  <Button
+                    icon={<ImportOutlined />}
+                    disabled={targetAliases.length === 0}
+                    onClick={() => setPoolImportOpen(true)}
+                  >
+                    导入 MailAPI 号池
+                  </Button>
                   {selectedAliasIds.length > 0 && (
                     <>
                       <Popconfirm
@@ -505,6 +516,13 @@ export default function ICloudPage() {
       />
 
       <AliasInboxDrawer alias={inboxAlias} onClose={() => setInboxAlias(null)} />
+
+      <AliasPoolImportModal
+        open={poolImportOpen}
+        aliases={targetAliases}
+        accountId={filterAccountId}
+        onClose={() => setPoolImportOpen(false)}
+      />
     </div>
   )
 }
@@ -653,6 +671,97 @@ function GenerateAliasModal({
           <Input placeholder="批量生成" />
         </Form.Item>
       </Form>
+    </Modal>
+  )
+}
+
+function AliasPoolImportModal({
+  open,
+  aliases,
+  accountId,
+  onClose,
+}: {
+  open: boolean
+  /** 勾选优先，没勾选就是当前筛选出来的全部，跟导出的口径一致 */
+  aliases: ICloudAlias[]
+  accountId?: number
+  onClose: () => void
+}) {
+  const { message } = App.useApp()
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<ICloudAliasPoolImportResult | null>(null)
+  const exportable = countExportableAliases(aliases, 'mail_url')
+
+  useEffect(() => {
+    if (open) setResult(null)
+  }, [open])
+
+  const submit = async () => {
+    setBusy(true)
+    try {
+      const response = await importICloudAliasesToPool({
+        // 全量导时带上主号筛选，否则"全部主号"下会把别的账号的别名也一起塞进去
+        ids: aliases.map((alias) => alias.id),
+        account_id: accountId,
+        origin: window.location.origin,
+      })
+      setResult(response)
+      if (response.imported > 0) {
+        message.success(`已导入 ${response.imported} 个隐私邮箱到 MailAPI URL 号池`)
+      } else {
+        message.warning('没有导入新的隐私邮箱，看看下面的原因')
+      }
+    } catch (error) {
+      message.error((error as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal
+      open={open}
+      title="导入 MailAPI URL 号池"
+      onCancel={onClose}
+      onOk={submit}
+      confirmLoading={busy}
+      okText="开始导入"
+      width={640}
+      destroyOnHidden
+    >
+      <Paragraph type="secondary">
+        把隐私邮箱写进微软号池，一行一条 <Text code>隐私邮箱----邮件 URL</Text>
+        ，等价于先导出再手工导入，只是省掉了中间那一步。导入后设置里的「导入类型」会自动切到
+        MailAPI URL，注册取号才会取到这些地址。
+      </Paragraph>
+      <Paragraph>
+        <Space direction="vertical" size={2}>
+          <Text>
+            待导入：<Text strong>{aliases.length}</Text> 个（没有免登录邮件链接的会整行跳过）
+          </Text>
+          <Text type="secondary">
+            {exportable === aliases.length
+              ? '都有邮件 URL，可以全部导入'
+              : `${aliases.length - exportable} 个还没有邮件 URL，会被跳过`}
+          </Text>
+        </Space>
+      </Paragraph>
+      {result && (
+        <Alert
+          type={result.errors.length ? 'warning' : 'success'}
+          showIcon
+          message={`导入完成：成功 ${result.imported} / 失败 ${result.failed} / 跳过 ${result.skipped}`}
+          description={
+            result.errors.length ? (
+              <pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{result.errors.join('\n')}</pre>
+            ) : undefined
+          }
+        />
+      )}
+      <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
+        邮件链接就是权限，导进号池等于把它交给了注册任务；不想再给这个地址收信时，
+        记得在 Apple 那边把隐私邮箱停用。
+      </Paragraph>
     </Modal>
   )
 }

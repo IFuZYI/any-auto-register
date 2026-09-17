@@ -116,6 +116,19 @@ class BatchDeleteAliasRequest(BaseModel):
     remote: bool = True
 
 
+class AliasPoolImportRequest(BaseModel):
+    """把隐私邮箱导入 MailAPI URL 号池。
+
+    ``origin`` 由前端把浏览器地址栏的 origin 传上来（反代、内网穿透、换端口都算），
+    后端拿它拼免登录链接；不传或传得不合法时退回配置项 ``public_base_url``。
+    """
+
+    ids: list[int] = Field(default_factory=list)
+    account_id: Optional[int] = None
+    origin: str = ""
+    enabled: bool = True
+
+
 def _login_response(state: LoginState) -> dict[str, Any]:
     """登录完成时顺带把主号落库，让前端一次调用即可拿到最终结果。"""
     payload = state.to_dict()
@@ -279,6 +292,20 @@ def batch_delete_aliases(body: BatchDeleteAliasRequest):
         raise HTTPException(400, "请先选择要删除的隐私邮箱")
     result = icloud_service.delete_aliases(body.ids, remote=body.remote)
     return {"ok": not result["failed"], **result}
+
+
+@router.post("/aliases/import-to-pool")
+def import_aliases_to_pool(body: AliasPoolImportRequest):
+    """把隐私邮箱导进 MailAPI URL 号池，等价于导出 mail_url 再手工导入。
+
+    不传 ids 就按 account_id（再缺省则全部主号）全量导。
+    """
+    return icloud_service.import_aliases_to_mailapi_pool(
+        body.ids,
+        account_id=body.account_id,
+        origin=body.origin,
+        enabled=body.enabled,
+    )
 
 
 @router.delete("/aliases/{alias_id}")

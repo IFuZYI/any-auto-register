@@ -9,13 +9,16 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
+from urllib.parse import urlparse
 
 from sqlmodel import Session, select
 
+from core.config_store import config_store
 from core.db import (
     ICloudAccountModel,
     ICloudAliasModel,
+    OutlookAccountModel,
     engine,
     new_alias_share_token,
 )
@@ -39,6 +42,16 @@ logger = logging.getLogger(__name__)
 # Apple 对每个主号限制每滚动小时最多成功生成 5 个隐私邮箱。
 HOURLY_ALIAS_LIMIT = 5
 DEFAULT_MESSAGE_LIMIT = 50
+
+# 隐私邮箱免登录页的路径前缀。前端 `aliasMailUrl()` 拼的是同一个路径，两边必须一致，
+# 不然导出的链接贴回来自己都打不开。
+SHARED_MAIL_PATH_PREFIX = "/m/"
+
+# 号池落库的 account_type。隐私邮箱走 URL 轮询取码，和 MailAPI URL 是同一类账号。
+POOL_ACCOUNT_TYPE_MAILAPI_URL = "mailapi_url"
+# 视图配置项，写进去后注册取号才会只取 mailapi_url 这一类（见 services/mail_imports/import_source.py）。
+MAIL_IMPORT_SOURCE_KEY = "mail_import_source"
+MAIL_IMPORT_SOURCE_MAILAPI = "mailapi"
 
 # 同一主号的隐私邮箱生成必须串行，否则并发注册会互相挤占小时额度。
 _ACCOUNT_LOCKS: dict[int, threading.Lock] = {}
@@ -400,6 +413,214 @@ def delete_aliases(
         else:
             deleted.append(alias_id)
     return {"deleted": deleted, "failed": failed}
+
+
+# ------------------------------------------------------- 隐私邮箱导入 MailAPI 池
+
+
+def normalize_public_base_url(value: Any) -> str:
+    """把面板访问地址收敛成 ``scheme://host[:port]``，认不出就返回空串。
+
+    只接受 http/https 且有主机名的地址。导出的免登录链接是要贴进号池、
+    以后由注册任务去轮询的，存进去一个拼不起来的串比不存更糟。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parsed = urlparse(text)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def resolve_public_base_url(origin: Any = "") -> str:
+    """决定免登录链接用哪个面板地址。
+
+    前端知道用户实际是从哪个地址打开面板的（反代、内网穿透、换端口都算），
+    所以优先用它传来的 origin；只有它没给或给得不合法时才退回配置项
+    ``public_base_url``。
+    """
+    return normalize_public_base_url(origin) or normalize_public_base_url(
+        config_store.get("public_base_url", "")
+    )
+
+
+def build_alias_mailapi_lines(
+    aliases: Iterable[dict[str, Any]], base_url: str
+) -> tuple[list[str], list[str]]:
+    """把别名行拼成 ``隐私邮箱----<面板地址>/m/<share_token>``，与前端导出一致。
+
+    返回 ``(lines, skipped)``。没有 share_token 的老别名拼不出链接——这正是
+    前端 ``countExportableAliases`` 要整行跳过的那些；写成末尾空着的
+    ``邮箱----`` 只会让对面的导入器报格式错。
+    """
+    prefix = str(base_url or "").strip().rstrip("/")
+    lines: list[str] = []
+    skipped: list[str] = []
+    for alias in aliases:
+        address = str(alias.get("address") or "").strip().lower()
+        token = str(alias.get("share_token") or "").strip()
+        if not address or not token or not prefix:
+            skipped.append(address)
+            continue
+        lines.append(f"{address}----{prefix}{SHARED_MAIL_PATH_PREFIX}{token}")
+    return lines, skipped
+
+
+def _list_pool_emails() -> set[str]:
+    with Session(engine) as session:
+        return {
+            str(email or "").strip().lower()
+            for email in session.exec(select(OutlookAccountModel.email)).all()
+            if str(email or "").strip()
+        }
+
+
+def _resolve_pool_alias_ids(
+    alias_ids: Optional[list[int]], account_id: Optional[int]
+) -> tuple[list[dict[str, Any]], Optional[str]]:
+    """挑出要入池的别名；一条都没挑到时，把原因一并带回去。
+
+    传了 ``account_id`` 就只在这位主号的别名里挑：勾选的行可能已经被"全部主号"
+    之外的筛选换掉了，不能拿它去越界取别人的别名。
+    """
+    aliases = list_aliases(account_id)
+    wanted: list[int] = []
+    seen: set[int] = set()
+    for raw_id in alias_ids or []:
+        try:
+            alias_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if alias_id not in seen:
+            seen.add(alias_id)
+            wanted.append(alias_id)
+
+    if wanted:
+        picked = set(wanted)
+        aliases = [alias for alias in aliases if int(alias["id"]) in picked]
+        if not aliases:
+            return [], "选中的隐私邮箱都不存在，可能已经被删掉了"
+    elif not aliases:
+        return [], "还没有隐私邮箱，先在「隐私邮箱」里生成或同步一批"
+    return aliases, None
+
+
+def _apply_mail_import_source() -> None:
+    """把导入视图切到 MailAPI URL。
+
+    池子里混着 OAuth 号和 MailAPI URL 号，取号是按视图筛 account_type 的
+    （``services/mail_imports/import_source.py``）：视图还停在 Outlook 的话，
+    这些刚导进去的隐私邮箱一个都不会被取到，用户只会看到注册任务"没有可用邮箱"。
+    """
+    try:
+        from services.mail_imports import normalize_mail_import_source
+
+        current = normalize_mail_import_source(
+            config_store.get(MAIL_IMPORT_SOURCE_KEY, ""),
+            config_store.get("mail_provider", ""),
+        )
+        if current != MAIL_IMPORT_SOURCE_MAILAPI:
+            config_store.set(MAIL_IMPORT_SOURCE_KEY, MAIL_IMPORT_SOURCE_MAILAPI)
+    except Exception:  # noqa: BLE001 - 切视图失败不该让已经入池的账号白导
+        logger.exception("切换 mail_import_source 失败")
+
+
+def import_aliases_to_mailapi_pool(
+    alias_ids: Optional[list[int]] = None,
+    *,
+    account_id: Optional[int] = None,
+    origin: str = "",
+    enabled: bool = True,
+) -> dict[str, Any]:
+    """把隐私邮箱导入 MailAPI URL 账号池，等价于「导出 mail_url 再导入」。
+
+    走的是邮箱导入那条老路（``MicrosoftMailImportStrategy``），所以查重、
+    ``account_type=mailapi_url`` 落库这些规则都跟手工导入一模一样；差别只在
+    内容由后端按 share_token 现拼，省掉导出再导入那一步。
+    """
+    aliases, reason = _resolve_pool_alias_ids(alias_ids, account_id)
+    if reason:
+        return {
+            "total": 0,
+            "imported": 0,
+            "skipped": 0,
+            "failed": 0,
+            "skipped_aliases": [],
+            "errors": [reason],
+            "source": MAIL_IMPORT_SOURCE_MAILAPI,
+        }
+
+    base_url = resolve_public_base_url(origin)
+    if not base_url:
+        return {
+            "total": len(aliases),
+            "imported": 0,
+            "skipped": 0,
+            "failed": 0,
+            "skipped_aliases": [],
+            "errors": [
+                "无法确定面板访问地址，拼不出免登录邮件链接。"
+                "请从浏览器地址栏打开面板后再试，或在设置里填写「面板访问地址」。"
+            ],
+            "source": MAIL_IMPORT_SOURCE_MAILAPI,
+        }
+
+    lines, skipped = build_alias_mailapi_lines(aliases, base_url)
+    if not lines:
+        return {
+            "total": len(aliases),
+            "imported": 0,
+            "skipped": len(skipped),
+            "failed": 0,
+            "skipped_aliases": skipped,
+            "errors": ["选中的隐私邮箱都还没有免登录邮件链接，导不出可导入的内容"],
+            "source": MAIL_IMPORT_SOURCE_MAILAPI,
+        }
+
+    from services.mail_imports import MailImportExecuteRequest, mail_import_registry
+
+    strategy = mail_import_registry.get("microsoft")
+    existing = _list_pool_emails()
+    response = strategy.execute(
+        MailImportExecuteRequest(
+            type="microsoft",
+            content="\n".join(lines),
+            enabled=bool(enabled),
+            # 导入完成后单独切视图：这一批可能一条都没进池（全被查重挡下），
+            # 那种情况不该动用户当前的设置
+            bind_to_config=False,
+        )
+    )
+
+    imported_emails = {
+        str(item.get("email") or "").strip().lower()
+        for item in (response.meta.get("accounts") or [])
+    }
+    errors = list(response.errors)
+    # 已经在池子里的不算失败，但得如实说一声，不然用户会以为点了没反应
+    already = len(
+        [
+            email
+            for email in (line.split("----", 1)[0] for line in lines)
+            if email.strip().lower() in existing and email.strip().lower() not in imported_emails
+        ]
+    )
+    if already:
+        errors.append(f"{already} 个隐私邮箱早就在号池里了，没有重复导入")
+
+    if response.summary.success:
+        _apply_mail_import_source()
+
+    return {
+        "total": response.summary.total,
+        "imported": response.summary.success,
+        "skipped": len(skipped),
+        "failed": response.summary.failed,
+        "skipped_aliases": skipped,
+        "errors": errors,
+        "source": MAIL_IMPORT_SOURCE_MAILAPI,
+    }
 
 
 def _upsert_alias(

@@ -102,6 +102,10 @@ CONFIG_KEYS = [
     "icloud_alias_label",
     "icloud_alias_note",
     "icloud_account_email",
+    # 面板对外访问地址。隐私邮箱导入 MailAPI URL 号池时要拿它拼免登录链接，
+    # 平时前端会把浏览器地址栏的 origin 带上来，只有服务端单独跑（或地址栏
+    # 也不对）时才用得上这一项。
+    "public_base_url",
     "sms_enabled",
     "sms_provider",
     "sms_api_key",
