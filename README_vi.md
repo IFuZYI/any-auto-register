@@ -182,15 +182,48 @@ ID quốc gia, số giây chờ mỗi số và số lần đổi số tối đa 
 
 ### 6. Đồng bộ trạng thái hàng loạt & re-upload cho ChatGPT
 
-Ở đầu trang danh sách ChatGPT, hiện có hai loại chức năng hàng loạt:
+Ở đầu trang danh sách ChatGPT, hiện có ba loại chức năng hàng loạt:
 
 - **Đồng bộ trạng thái**
   - Đồng bộ trạng thái tài khoản cục bộ đã chọn
-  - Đồng bộ trạng thái CLIProxyAPI đã chọn
+  - Đồng bộ trạng thái CPA đã chọn
   - Hoặc thực hiện hàng loạt theo bộ lọc hiện tại
 - **Re-upload những tài khoản không tìm thấy ở remote**
   - Re-upload auth-file không tìm thấy ở remote
   - Hỗ trợ "phạm vi lọc hiện tại" hoặc "tài khoản đã chọn hiện tại"
+
+So sánh phiên bản và đồng bộ hai chiều theo từng tài khoản nằm ở trang **Cài đặt → Plugin** — xem [§6.2](#62-đồng-bộ-tài-khoản-bên-nào-mới-hơn-thì-theo); bản thân trang plugin xem [§6.1](#61-trang-plugin-bảng-điều-khiển-cpa-từ-xa).
+
+### 6.1 Trang plugin: bảng điều khiển CPA từ xa
+
+Bảng CPA trong **Cài đặt → Plugin** không còn là CLIProxyAPI cài đặt cục bộ, mà **kết nối trực tiếp tới bảng CPA từ xa** bạn đã có:
+
+- Địa chỉ và API Key đọc trực tiếp từ **Cài đặt → ChatGPT → Bảng CPA** (`cpa_api_url` / `cpa_api_key`), không cần cấu hình riêng
+- **Mở trang quản trị (từ xa)** mở `{API URL}/management.html` trong tab mới
+- **Kiểm tra kết nối** gọi thử `GET /v0/management/auth-files`, phân biệt bốn trạng thái "đã kết nối / Key không hợp lệ / không tới được / chưa cấu hình" và đếm luôn số credential codex ở remote
+- **Backfill tài khoản ChatGPT hiện có** đẩy những tài khoản có ở local mà remote chưa có (giữ nguyên hành vi cũ)
+
+### 6.2 Đồng bộ tài khoản: bên nào mới hơn thì theo
+
+Ngay bên dưới là **Đồng bộ tài khoản (local ↔ CPA)**:
+
+1. Bấm **Bắt đầu so sánh** để lấy danh sách auth-file ở remote một lần — **chỉ đọc**, không sửa dữ liệu
+2. So sánh từng tài khoản theo thứ tự ưu tiên: **thời điểm AT hết hạn** (giải `exp` trong JWT) → nếu bằng nhau hoặc thiếu thì lùi về **thời điểm refresh** (local lấy `chatgpt_token_refresh.at`, remote lấy `last_refresh` của auth-file); lệch trong 60 giây coi như khớp
+3. Bảng hiển thị từng tài khoản với "AT hết hạn local / AT hết hạn remote / refresh local / refresh remote / phán định / giải thích", kèm tổng hợp: khớp, local mới hơn, remote mới hơn, thiếu ở remote, thiếu ở local, không so sánh được
+
+Phán định và hành động:
+
+| Phán định | Hành động ở chế độ `auto` |
+| --- | --- |
+| Thiếu ở remote / local mới hơn | Đẩy lên CPA (trước khi đẩy phải probe trạng thái local, chỉ `access_token_valid` mới cho upload; upload xong kiểm tra lại một lần) |
+| Thiếu ở local / remote mới hơn | Kéo về local (ghi đè AT/RT/id_token; giá trị rỗng không ghi đè) |
+| Đã khớp / không so sánh được | Bỏ qua |
+
+Ba nút đồng bộ: **Đồng bộ tới mới nhất** (mặc định, hai chiều), **Chỉ đẩy local mới hơn**, **Chỉ kéo remote mới hơn**; mỗi dòng trong bảng còn có nút **Đồng bộ** riêng.
+
+Hai ràng buộc an toàn: khi trạng thái remote đã là `access_token_invalidated` / `unauthorized` / `account_deactivated` thì **từ chối kéo** (tránh mang credential chết về local); khi entry ở remote không trả `access_token` thì báo rõ "không kéo được" thay vì đoán một endpoint tải về (có thể export từ bảng CPA rồi import thủ công).
+
+Khu vực **Trạng thái CLIProxyAPI** trong trang chi tiết tài khoản cũng hiển thị thời điểm AT hết hạn ở local/remote và phán định phiên bản của lần so sánh này.
 
 ### 7. Xuất hàng loạt nhiều định dạng
 
@@ -478,8 +511,8 @@ CAMOUFOX_VERSION=135.0.1 CAMOUFOX_RELEASE=beta.24 docker compose build app
 ### Khuyến nghị sử dụng Docker
 
 - Image hiện tại chủ yếu bao phủ ứng dụng chính và Turnstile Solver cục bộ
-- Logic tự động cài đặt/khởi chạy `CLIProxyAPI` vẫn thiên về môi trường host machine
-- Nếu phụ thuộc vào `conda`, Go hoặc file thực thi Windows, không khuyến nghị chạy trực tiếp trong Linux container hiện tại
+- Bảng CPA là **dịch vụ bên ngoài**, bạn tự triển khai ngoài container; container chỉ truy cập nó qua `cpa_api_url`
+- Nếu phụ thuộc vào `conda` hoặc file thực thi Windows, không khuyến nghị chạy trực tiếp trong Linux container hiện tại
 - Nếu chỉ cần Web UI, quản lý tài khoản, điều phối tác vụ và Solver cục bộ, cấu hình Compose hiện tại có thể sử dụng trực tiếp
 
 ## Plugin & phụ thuộc bên ngoài
@@ -490,22 +523,17 @@ Dự án hỗ trợ自建 email tạm thời qua Cloudflare Worker, nguồn gi�
 
 - <https://github.com/dreamhunter2333/cloudflare_temp_email>
 
-### Địa chỉ Git plugin bên ngoài
+### Plugin bên ngoài: bảng CPA
 
-Dự án hiện hỗ trợ cài đặt/khởi động các thành phần bên ngoài sau:
+Trang plugin không còn clone / build / khởi chạy CLIProxyAPI trên máy cục bộ nữa, mà **kết nối trực tiếp tới bảng CPA từ xa** bạn đã có (xem [§6.1](#61-trang-plugin-bảng-điều-khiển-cpa-từ-xa)):
 
-| Dự án | Mục đích | Địa chỉ Git |
+| Dự án | Mục đích | Repo upstream |
 | --- | --- | --- |
-| CLIProxyAPI | Dịch vụ quản lý CPA / Proxy Pool | `https://github.com/router-for-me/CLIProxyAPI.git` |
+| CLIProxyAPI | Dịch vụ quản lý CPA / Proxy Pool | <https://github.com/router-for-me/CLIProxyAPI> |
 
-Nút **"Cài đặt phiên bản mới nhất / Cập nhật lên phiên bản mới nhất"** trong trang plugin sẽ đồng bộ code mới nhất từ repo, và đã hỗ trợ **gỡ cài đặt** (sẽ dừng dịch vụ trước, sau đó xóa thư mục plugin cục bộ).
-Mặc định cập nhật theo **semver tag mới nhất**; cũng có thể chuyển về chế độ **branch HEAD** trong "Cài đặt → Plugin → Chiến lược cài đặt/cập nhật".
+Bạn tự triển khai và tự nâng cấp bảng; dự án này chỉ đọc/ghi auth-file của nó qua management API. Địa chỉ và key dùng lại từ **Cài đặt → ChatGPT → Bảng CPA** (`cpa_api_url` / `cpa_api_key`), không cần cấu hình thêm.
 
-Nếu cần thay đổi địa chỉ `ghproxy`, `gitclone`, mirror Git doanh nghiệp hoặc proxy khác, cần đồng bộ sửa đổi:
-
-```text
-services/external_apps.py
-```
+Trường hợp duy nhất còn phải sửa code là khi đường dẫn management API của bảng thay đổi (hiện tại là `/management.html` và `/v0/management/auth-files`, nằm trong `services/external_apps.py`).
 
 ## Xử lý sự cố thường gặp
 

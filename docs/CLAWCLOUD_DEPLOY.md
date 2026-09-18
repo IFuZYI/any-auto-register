@@ -71,8 +71,10 @@ git push
 在 ClawCloud 的 `Persistent Storage` / `Local Storage` 中添加挂载：
 
 - 挂载 `/<storage>/runtime` 到容器路径 `/runtime`（必选）
-- 挂载 `/<storage>/ext_targets` 到容器路径 `/_ext_targets`（可选）
-- 挂载 `/<storage>/external_logs` 到容器路径 `/app/services/external_logs`（可选）
+- ~~挂载 `/<storage>/ext_targets` 到容器路径 `/_ext_targets`（可选）~~
+- ~~挂载 `/<storage>/external_logs` 到容器路径 `/app/services/external_logs`（可选）~~
+
+> 注(2026-09):后两个挂载原本是给「本地安装 CLIProxyAPI 插件」用的,该实现已删除,两个目录都没有使用方,不挂也能正常运行。插件页现在连的是**容器外的远程 CPA 面板**,只需保证容器能出站访问 `cpa_api_url`。
 
 为什么必须挂载 `/runtime`：
 - `docker/entrypoint.sh` 会在 `/runtime` 下创建 `account_manager.db`、日志及缓存文件

@@ -192,6 +192,8 @@ At the top of the ChatGPT platform list, there are three types of batch capabili
   - Re-upload auth-files not found on the remote
   - Supports "current filter scope" or "currently selected accounts"
 
+Account-level version comparison and two-way sync live on the **Settings → Plugins** page — see [§6.2](#62-account-sync-newest-side-wins); the plugins page itself is documented in [§6.1](#61-plugins-page-remote-cpa-panel).
+
 ### 6.1 Plugins Page: Remote CPA Panel
 
 The CPA panel under **Settings → Plugins** no longer installs CLIProxyAPI locally — it connects directly to your existing remote CPA panel:
@@ -507,8 +509,8 @@ CAMOUFOX_VERSION=135.0.1 CAMOUFOX_RELEASE=beta.24 docker compose build app
 ### Docker Usage Notes
 
 - The current Docker image primarily covers the main application and local Turnstile Solver
-- Auto-install/launch logic for `CLIProxyAPI` still favors the host machine environment
-- If you depend on `conda`, Go, or Windows executables, it is not recommended to run these directly in the current Linux container
+- The CPA panel is an **external service** you deploy yourself; the container only reaches it via `cpa_api_url`
+- If you depend on `conda` or Windows executables, it is not recommended to run these directly in the current Linux container
 - If you only need Web UI, account management, task scheduling, and local Solver, the current Compose configuration works out of the box
 
 ## Plugins & External Dependencies
@@ -519,22 +521,17 @@ The project supports self-hosting temporary email via Cloudflare Worker, sourced
 
 - <https://github.com/dreamhunter2333/cloudflare_temp_email>
 
-### External Plugin Git URLs
+### External Plugin: CPA Panel
 
-The project currently supports on-demand installation/launch of the following external components:
+The plugins page no longer clones, builds or launches CLIProxyAPI on the local machine — it connects directly to your existing remote CPA panel (see [§6.1](#61-plugins-page-remote-cpa-panel)):
 
-| Project | Purpose | Git URL |
+| Project | Purpose | Upstream repo |
 | --- | --- | --- |
-| CLIProxyAPI | CPA / Proxy pool management service | `https://github.com/router-for-me/CLIProxyAPI.git` |
+| CLIProxyAPI | CPA / Proxy pool management service | <https://github.com/router-for-me/CLIProxyAPI> |
 
-The **"Install Latest / Update to Latest"** button in the plugin page syncs the latest code from the repo, and now supports **uninstallation** (stops the service first, then deletes the local plugin directory).
-By default, it updates to the **latest semver tag**; you can also switch back to **branch HEAD** mode in "Settings → Plugins → Install/Update Strategy".
+You deploy and upgrade the panel yourself; this project only reads and writes its auth-files over the management API. Address and key are reused from **Settings → ChatGPT → CPA Panel** (`cpa_api_url` / `cpa_api_key`), no separate config needed.
 
-If you need to change to `ghproxy`, `gitclone`, enterprise Git mirrors, or other proxy addresses, you'll need to also modify:
-
-```text
-services/external_apps.py
-```
+The only remaining code change you might need is when the panel's management API paths move (currently `/management.html` and `/v0/management/auth-files`, both in `services/external_apps.py`).
 
 ## Common Troubleshooting
 

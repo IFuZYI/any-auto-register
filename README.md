@@ -199,6 +199,8 @@ OpenAI 会对部分注册请求要求绑定手机号。命中 add-phone 时，�
   - 补传远端未发现的 auth-file
   - 支持“当前筛选范围”或“当前所选账号”两种作用范围
 
+账号级别的版本对比与双向同步在「设置 → 插件」页，见 [§6.2](#62-账号同步谁新听谁的)；插件页本身的用法见 [§6.1](#61-插件页远程-cpa-面板)。
+
 ### 6.1 插件页：远程 CPA 面板
 
 「设置 → 插件」里的 CPA 面板不再是本地安装的 CLIProxyAPI，而是**直连你已有的远程 CPA 面板**：
@@ -521,8 +523,8 @@ CAMOUFOX_VERSION=135.0.1 CAMOUFOX_RELEASE=beta.24 docker compose build app
 ### Docker 使用建议
 
 - 当前 Docker 镜像主要覆盖主应用和本地 Turnstile Solver
-- `CLIProxyAPI` 的自动安装/拉起逻辑仍偏向宿主机环境
-- 若依赖 `conda`、Go 或 Windows 可执行文件，不建议直接在当前 Linux 容器中启动这些插件
+- CPA 面板是**外部服务**，由你自己部署在容器外；容器只通过 `cpa_api_url` 访问它
+- 若依赖 `conda` 或 Windows 可执行文件，不建议直接在当前 Linux 容器中启动这些插件
 - 如果你只需要 Web UI、账号管理、任务调度和本地 Solver，当前 Compose 配置可直接使用
 
 ## 插件与外部依赖
@@ -533,22 +535,17 @@ CAMOUFOX_VERSION=135.0.1 CAMOUFOX_RELEASE=beta.24 docker compose build app
 
 - <https://github.com/dreamhunter2333/cloudflare_temp_email>
 
-### 外部插件 Git 地址
+### 外部插件：CPA 面板
 
-项目当前支持按需安装/启动以下外部组件：
+插件页不再在本机 clone / 编译 / 拉起 CLIProxyAPI，而是**直连你已有的远程 CPA 面板**（用法见 [§6.1](#61-插件页远程-cpa-面板)）：
 
-| 项目 | 用途 | Git 地址 |
+| 项目 | 用途 | 上游仓库 |
 | --- | --- | --- |
-| CLIProxyAPI | CPA / 代理池管理服务 | `https://github.com/router-for-me/CLIProxyAPI.git` |
+| CLIProxyAPI | CPA / 代理池管理服务 | <https://github.com/router-for-me/CLIProxyAPI> |
 
-插件页中的 **“安装最新版 / 更新到最新版”** 会同步仓库最新代码，且已支持 **卸载**（会先停止服务，再删除本地插件目录）。
-默认按 **最新 semver tag** 更新；你也可以在“设置 → 插件 → 安装/更新策略”切回 **分支 HEAD** 模式。
+面板要自己部署、自己升级，本项目只通过管理接口读写它的 auth-file。地址与密钥复用「设置 → ChatGPT → CPA 面板」的 `cpa_api_url` / `cpa_api_key`，不需要额外配置。
 
-如果你后续要改成 `ghproxy`、`gitclone`、企业 Git 镜像或其他代理地址，需要同步修改：
-
-```text
-services/external_apps.py
-```
+唯一还需要改代码的场景是面板的管理接口路径变了（目前写死 `services/external_apps.py` 里的 `/management.html` 与 `/v0/management/auth-files`）。
 
 ## 常见问题排查
 
