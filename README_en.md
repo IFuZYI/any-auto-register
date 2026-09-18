@@ -182,15 +182,44 @@ Country ID, per-number timeout, and max number swaps can additionally be overrid
 
 ### 6. ChatGPT Batch Status Sync & Re-upload
 
-At the top of the ChatGPT platform list, there are two types of batch capabilities:
+At the top of the ChatGPT platform list, there are three types of batch capabilities:
 
 - **Status Sync**
   - Sync selected accounts' local status
-  - Sync selected accounts' CLIProxyAPI status
+  - Sync selected accounts' CPA status
   - Or batch execute on current filter results
 - **Re-upload accounts not found on remote**
   - Re-upload auth-files not found on the remote
   - Supports "current filter scope" or "currently selected accounts"
+
+### 6.1 Plugins Page: Remote CPA Panel
+
+The CPA panel under **Settings → Plugins** no longer installs CLIProxyAPI locally — it connects directly to your existing remote CPA panel:
+
+- The address and API key are read from **Settings → ChatGPT → CPA Panel** (`cpa_api_url` / `cpa_api_key`); no separate config to maintain
+- **Open Management Page (remote)** opens `{API URL}/management.html` in a new tab
+- **Test Connection** probes `GET /v0/management/auth-files` on the spot, distinguishing "connected / invalid key / unreachable / not configured" and counting remote codex credentials
+- **Backfill Existing ChatGPT Accounts** uploads local accounts missing on the remote (same behaviour as before)
+
+### 6.2 Account Sync: Newest Side Wins
+
+Below that is **Account Sync (local ↔ CPA)**:
+
+1. **Compare** fetches the remote auth-file list once — read-only, changes nothing
+2. Each account is compared by: **AT expiry** (decoded from the JWT `exp`), falling back to **refresh time** (local `chatgpt_token_refresh.at` vs remote `last_refresh`) when the expiries are equal or missing; a 60-second difference counts as in-sync
+3. The table shows local AT expiry, remote AT expiry, local refresh, remote refresh, verdict and detail, plus a summary of in-sync / local-newer / remote-newer / missing sides / unknown
+
+| Verdict | Action in `auto` mode |
+| --- | --- |
+| Remote missing / local newer | Push to CPA (local status must probe `access_token_valid` first; re-verified after upload) |
+| Local missing / remote newer | Pull to local (overwrites AT/RT/id_token; empty values never overwrite) |
+| In sync / unknown | Skip |
+
+Three buttons: **Sync to newest** (default, both directions), **Push local-newer only**, **Pull remote-newer only**; every row also has its own **Sync** button.
+
+Two safety rules: pulling is refused when the remote state is `access_token_invalidated` / `unauthorized` / `account_deactivated` (no point importing dead credentials), and when the remote entry carries no `access_token` the sync reports "cannot pull" instead of guessing a download endpoint (export it from the CPA panel and import manually).
+
+The account detail drawer's **CLIProxyAPI Status** section also shows the compared AT expiries and verdict.
 
 ### 7. Multi-format Batch Export
 
