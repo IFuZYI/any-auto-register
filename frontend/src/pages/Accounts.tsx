@@ -419,18 +419,42 @@ function uploadSyncTitle(name: string, sync: any) {
   return parts.join('\n') || `${name} 已记录状态`
 }
 
+function cliproxyVersionMeta(direction: string) {
+  switch (direction) {
+    case 'in_sync':
+      return { color: 'success', label: '版本一致' }
+    case 'local_newer':
+      return { color: 'processing', label: '本地较新' }
+    case 'remote_newer':
+      return { color: 'processing', label: '远端较新' }
+    case 'missing_remote':
+      return { color: 'warning', label: '远端缺失' }
+    case 'missing_local':
+      return { color: 'warning', label: '本地缺失' }
+    case 'unreachable':
+      return { color: 'error', label: '面板不可达' }
+    default:
+      return { color: 'default', label: '无法比较' }
+  }
+}
+
 function CliproxySyncSummary({ sync }: { sync: any }) {
   const meta = cliproxyStateMeta(sync)
+  const version = cliproxyVersionMeta(String(sync?.version_direction || ''))
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
         <Tag color={meta.color}>{meta.label}</Tag>
         {sync?.status ? <Tag>{`status: ${sync.status}`}</Tag> : null}
+        {sync?.version_direction ? <Tag color={version.color}>{version.label}</Tag> : null}
       </div>
       <SummaryField label="状态信息" value={sync?.status_message} code />
       <SummaryField label="auth-file" value={sync?.name} />
       <SummaryField label="API URL" value={sync?.base_url} />
       <SummaryField label="同步时间" value={sync?.last_synced_at ? formatSyncTime(sync.last_synced_at) : ''} />
+      <SummaryField label="本地 AT 过期" value={sync?.local_at_expires_at ? formatSyncTime(sync.local_at_expires_at) : ''} />
+      <SummaryField label="远端 AT 过期" value={sync?.remote_at_expires_at ? formatSyncTime(sync.remote_at_expires_at) : ''} />
+      <SummaryField label="版本说明" value={sync?.version_detail} />
       <SummaryField label="远端刷新时间" value={sync?.last_refresh ? formatSyncTime(sync.last_refresh) : ''} />
       <SummaryField label="下次重试时间" value={sync?.next_retry_after ? formatSyncTime(sync.next_retry_after) : ''} />
       <SummaryField label="探测信息" value={sync?.last_probe_message} code />
