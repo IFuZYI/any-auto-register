@@ -24,7 +24,9 @@ from sqlmodel import Session
 from services.cliproxyapi_sync import (
     BATCH_PROBE_DELAY_SECONDS,
     VERSION_DIRECTION_LABELS,
+    _at_expires_at,
     _match_auth_file,
+    _to_iso,
     build_version_compare,
     list_auth_files,
 )
@@ -56,6 +58,26 @@ def _local_inputs(account: Any) -> dict[str, Any]:
         updated_at = getattr(account, "updated_at", None)
         last_refresh = updated_at.isoformat() if isinstance(updated_at, datetime) else updated_at
     return {"access_token": access_token, "last_refresh": str(last_refresh or "").strip()}
+
+
+def _local_report_view(account: Any, compare: dict[str, Any] | None = None) -> dict[str, Any]:
+    """给报告用的本地视图：只暴露"有没有 AT"和刷新时间，不带 AT 原文。
+
+    这个结构会原样回给前端，`_local_inputs` 里的 `access_token` 不能直接放出去。
+    正常分支已经算好 `compare` 时直接传进来复用，省一次 JWT 解析。
+    """
+    inputs = _local_inputs(account)
+    if isinstance(compare, dict):
+        at_expires_at = str(compare.get("local_at_expires_at") or "")
+        last_refresh = str(compare.get("local_last_refresh") or "")
+    else:
+        at_expires_at = _to_iso(_at_expires_at(inputs.get("access_token")))
+        last_refresh = str(inputs.get("last_refresh") or "")
+    return {
+        "has_access_token": bool(inputs.get("access_token")),
+        "at_expires_at": at_expires_at,
+        "last_refresh": last_refresh,
+    }
 
 
 def _remote_inputs(matched: dict[str, Any] | None) -> dict[str, Any]:
@@ -232,10 +254,7 @@ def sync_chatgpt_account_with_cpa(
         "detail": "",
         "message": "",
         # 注意不要把 AT 原文带进返回值 —— 这个结构会原样回给前端
-        "local": {
-            "has_access_token": bool(_local_inputs(account).get("access_token")),
-            "last_refresh": _local_inputs(account).get("last_refresh") or "",
-        },
+        "local": _local_report_view(account),
         "remote": {},
     }
 
@@ -253,11 +272,7 @@ def sync_chatgpt_account_with_cpa(
     result["direction"] = direction
     result["direction_label"] = _direction_label(direction)
     result["detail"] = str(compare.get("detail") or "")
-    result["local"] = {
-        "has_access_token": bool(local_inputs.get("access_token")),
-        "at_expires_at": compare.get("local_at_expires_at") or "",
-        "last_refresh": compare.get("local_last_refresh") or "",
-    }
+    result["local"] = _local_report_view(account, compare)
     result["remote"] = {
         "name": str((matched or {}).get("name") or ""),
         "status": str((matched or {}).get("status") or ""),
@@ -338,7 +353,8 @@ def build_cpa_sync_report(
                     "direction": "unreachable",
                     "direction_label": "面板不可达",
                     "detail": str(exc),
-                    "local": _local_inputs(account),
+                    # 和正常分支同一个形状：只给"有没有 AT + 时间"，不吐 AT 原文
+                    "local": _local_report_view(account),
                     "remote": {},
                 }
             )
@@ -347,7 +363,8 @@ def build_cpa_sync_report(
     summary["remote_auth_file_count"] = len(files)
     for account in account_list:
         matched = _match_auth_file(account, files)
-        compare = build_version_compare(_local_inputs(account), _remote_inputs(matched))
+        local_inputs = _local_inputs(account)
+        compare = build_version_compare(local_inputs, _remote_inputs(matched))
         direction = str(compare.get("direction") or "unknown")
         summary["counts"][direction] = int(summary["counts"].get(direction, 0)) + 1
         summary["items"].append(
@@ -357,10 +374,8 @@ def build_cpa_sync_report(
                 "direction": direction,
                 "direction_label": _direction_label(direction),
                 "detail": str(compare.get("detail") or ""),
-                "local": {
-                    "at_expires_at": compare.get("local_at_expires_at") or "",
-                    "last_refresh": compare.get("local_last_refresh") or "",
-                },
+                # 字段口径和不可达分支保持一致，前端表格两列都不会空
+                "local": _local_report_view(account, compare),
                 "remote": {
                     "name": str((matched or {}).get("name") or ""),
                     "status": str((matched or {}).get("status") or ""),

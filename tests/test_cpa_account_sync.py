@@ -92,6 +92,31 @@ class SyncReportTests(unittest.TestCase):
         self.assertFalse(report["reachable"])
         self.assertEqual(report["items"][0]["direction"], "unreachable")
 
+    def test_report_never_leaks_access_token(self):
+        """报告会原样回给前端，AT 原文不能出现在任何分支里。"""
+        account = DummyAccount()
+        secret = account.token
+        with mock.patch("services.cpa_account_sync.list_auth_files", return_value=[]):
+            report = build_cpa_sync_report([account], api_url="http://cpa.local", api_key="k")
+
+        self.assertNotIn(secret, json.dumps(report, ensure_ascii=False))
+        self.assertTrue(report["items"][0]["local"]["has_access_token"])
+
+    def test_unreachable_report_never_leaks_access_token(self):
+        account = DummyAccount()
+        secret = account.token
+        with mock.patch(
+            "services.cpa_account_sync.list_auth_files",
+            side_effect=RuntimeError("CLIProxyAPI 无法连接"),
+        ):
+            report = build_cpa_sync_report([account], api_url="http://cpa.local", api_key="k")
+
+        item = report["items"][0]
+        self.assertNotIn(secret, json.dumps(report, ensure_ascii=False))
+        # 不可达分支要和正常分支同一个形状，否则前端表格里本地列会空掉
+        self.assertEqual(sorted(item["local"]), ["at_expires_at", "has_access_token", "last_refresh"])
+        self.assertTrue(item["local"]["has_access_token"])
+
 
 class SingleAccountSyncTests(unittest.TestCase):
     def _run(self, account, files, mode="auto", probe=None, remote_state=None):
