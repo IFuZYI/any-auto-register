@@ -6,7 +6,7 @@ import base64
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from platforms.chatgpt.status_probe import CODEX_USER_AGENT, extract_chatgpt_account_id
@@ -16,6 +16,9 @@ DEFAULT_CLIPROXYAPI_BASE_URL = "http://127.0.0.1:8317"
 SYNC_RETRY_ATTEMPTS = 3
 SYNC_RETRY_DELAY_SECONDS = 0.4
 BATCH_PROBE_DELAY_SECONDS = 0.12
+# 两个 AT 的过期时间差在这个窗口内就算同一份凭证 —— 同一秒解出来的 exp
+# 不该因为时区/毫秒截断被判成"谁更新"
+VERSION_TOLERANCE_SECONDS = 60
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +38,22 @@ def _get_config_value(key: str, default: str = "") -> str:
 
 
 def _base_url(api_url: str | None = None) -> str:
-    return str(api_url or _get_config_value("cliproxyapi_base_url", DEFAULT_CLIPROXYAPI_BASE_URL) or DEFAULT_CLIPROXYAPI_BASE_URL).rstrip("/")
+    """CPA 面板地址。`cpa_api_url` 是主配置，旧的 `cliproxyapi_base_url` 兜底。"""
+    return str(
+        api_url
+        or _get_config_value("cpa_api_url")
+        or _get_config_value("cliproxyapi_base_url", DEFAULT_CLIPROXYAPI_BASE_URL)
+        or DEFAULT_CLIPROXYAPI_BASE_URL
+    ).rstrip("/")
 
 
 def _api_key(api_key: str | None = None) -> str:
-    return str(api_key or _get_config_value("cliproxyapi_management_key", "cliproxyapi") or "cliproxyapi").strip()
+    return str(
+        api_key
+        or _get_config_value("cpa_api_key")
+        or _get_config_value("cliproxyapi_management_key", "cliproxyapi")
+        or "cliproxyapi"
+    ).strip()
 
 
 def _headers(api_key: str | None = None) -> dict[str, str]:
@@ -168,6 +182,187 @@ def list_auth_files(*, api_url: str | None = None, api_key: str | None = None) -
     return [item for item in files if isinstance(item, dict)]
 
 
+# ── 版本对比 ────────────────────────────────────────────────
+# 两边谁更新，靠"凭证本身的过期时间"说话：AT 的 exp 直接决定这份凭证还能用
+# 多久，比文件的 mtime 可靠（上传时 mtime 会被重写，exp 不会）。exp 相同或
+# 缺失时才退回刷新时间。所有比较都是纯函数，不写库、不发请求。
+
+VERSION_DIRECTION_LABELS = {
+    "missing_remote": "远端缺失",
+    "missing_local": "本地缺失",
+    "local_newer": "本地较新",
+    "remote_newer": "远端较新",
+    "in_sync": "已一致",
+    "unknown": "无法比较",
+}
+
+
+def _decode_jwt_exp(token: Any) -> int:
+    """解 JWT payload 里的 `exp`（秒级时间戳），解不出返回 0。"""
+    text = str(token or "").strip()
+    if not text or text.count(".") < 2:
+        return 0
+    payload = text.split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    try:
+        decoded = json.loads(base64.urlsafe_b64decode(payload).decode("utf-8", errors="ignore"))
+    except Exception:
+        return 0
+    if not isinstance(decoded, dict):
+        return 0
+    exp = decoded.get("exp")
+    if isinstance(exp, bool):
+        return 0
+    if isinstance(exp, (int, float)) and exp > 0:
+        return int(exp)
+    if isinstance(exp, str) and exp.strip().isdigit():
+        return int(exp.strip())
+    return 0
+
+
+def _parse_time_value(value: Any) -> datetime | None:
+    """把远端/本地各种时间写法统一成 aware datetime。
+
+    吃 `2026-01-01T12:00:00+08:00`、`...Z`、`2026-01-01 12:00:00`、epoch 秒、
+    epoch 毫秒；解析不出来返回 None（调用方据此退回其它判据）。
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+        if seconds > 1e11:  # 毫秒
+            seconds /= 1000.0
+        try:
+            return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        except Exception:
+            return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return _parse_time_value(int(text))
+
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                parsed = datetime.strptime(text, fmt)
+                break
+            except ValueError:
+                continue
+        else:
+            return None
+    if parsed.tzinfo is None:
+        # CPA 写的是 +08:00 的墙钟时间，裸串按东八区理解（与 cpa_upload 一致）
+        parsed = parsed.replace(tzinfo=timezone(timedelta(hours=8)))
+    return parsed
+
+
+def _at_expires_at(access_token: Any) -> datetime | None:
+    exp = _decode_jwt_exp(access_token)
+    if not exp:
+        return None
+    try:
+        return datetime.fromtimestamp(exp, tz=timezone.utc)
+    except Exception:
+        return None
+
+
+def _to_iso(value: datetime | None) -> str:
+    return value.isoformat() if isinstance(value, datetime) else ""
+
+
+def _humanize_delta(delta_seconds: float) -> str:
+    seconds = abs(int(delta_seconds))
+    if seconds < 60:
+        return f"{seconds} 秒"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} 分钟"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours} 小时"
+    days = hours // 24
+    return f"{days} 天 {hours % 24} 小时"
+
+
+def build_version_compare(local: dict[str, Any] | None, remote: dict[str, Any] | None) -> dict[str, Any]:
+    """比较本地账号与远端 auth-file 的版本，只算不写。
+
+    `local` / `remote` 支持两种形态：直接给 token 串，或给带
+    `access_token` / `expired` / `at_expires_at` / `last_refresh` 的 dict。
+    """
+    local_data = local if isinstance(local, dict) else {"access_token": local}
+    remote_data = remote if isinstance(remote, dict) else {"access_token": remote}
+
+    local_token = str(local_data.get("access_token") or "").strip()
+    remote_token = str(remote_data.get("access_token") or "").strip()
+    # 远端条目不存在（或调用方显式说 present=False）时没什么可比的
+    remote_present = bool(remote_data) and remote_data.get("present", True) is not False
+
+    local_at = _parse_time_value(local_data.get("at_expires_at")) or _at_expires_at(local_token)
+    remote_at = (
+        _parse_time_value(remote_data.get("at_expires_at"))
+        or _parse_time_value(remote_data.get("expired"))
+        or _at_expires_at(remote_token)
+    )
+    local_refresh = _parse_time_value(local_data.get("last_refresh"))
+    remote_refresh = _parse_time_value(remote_data.get("last_refresh"))
+
+    result: dict[str, Any] = {
+        "local_at_expires_at": _to_iso(local_at),
+        "remote_at_expires_at": _to_iso(remote_at),
+        "local_last_refresh": _to_iso(local_refresh),
+        "remote_last_refresh": _to_iso(remote_refresh),
+        "remote_has_credentials": bool(remote_token),
+        "direction": "unknown",
+        "detail": "",
+    }
+
+    if not remote_present:
+        result["direction"] = "missing_remote"
+        result["detail"] = "远端没有这个账号的 auth-file"
+        return result
+
+    if not local_token:
+        result["direction"] = "missing_local"
+        result["detail"] = "本地没有可用的 access_token"
+        return result
+
+    if local_at and remote_at:
+        delta = (local_at - remote_at).total_seconds()
+        if abs(delta) <= VERSION_TOLERANCE_SECONDS:
+            result["direction"] = "in_sync"
+            result["detail"] = "两边 AT 过期时间一致"
+        elif delta > 0:
+            result["direction"] = "local_newer"
+            result["detail"] = f"本地 AT 晚 {_humanize_delta(delta)} 过期"
+        else:
+            result["direction"] = "remote_newer"
+            result["detail"] = f"远端 AT 晚 {_humanize_delta(delta)} 过期"
+        return result
+
+    # AT 的 exp 至少有一边解不出来，退回刷新时间
+    if local_refresh and remote_refresh:
+        delta = (local_refresh - remote_refresh).total_seconds()
+        if abs(delta) <= VERSION_TOLERANCE_SECONDS:
+            result["direction"] = "in_sync"
+            result["detail"] = "两边刷新时间一致"
+        elif delta > 0:
+            result["direction"] = "local_newer"
+            result["detail"] = f"本地刷新时间晚 {_humanize_delta(delta)}"
+        else:
+            result["direction"] = "remote_newer"
+            result["detail"] = f"远端刷新时间晚 {_humanize_delta(delta)}"
+        return result
+
+    result["detail"] = "两边都取不到可比的时间信息"
+    return result
+
+
 def _status_rank(status: str) -> int:
     order = {
         "active": 0,
@@ -270,6 +465,39 @@ def _probe_remote_auth(auth_index: str, account_id: str, *, api_url: str | None 
     }
 
 
+def _local_version_inputs(account: Any) -> dict[str, Any]:
+    """从账号（ORM 行或 duck-typed 快照）里凑出本地侧参与比版本的字段。"""
+    extra = getattr(account, "extra", None)
+    if not isinstance(extra, dict):
+        getter = getattr(account, "get_extra", None)
+        extra = getter() if callable(getter) else {}
+        if not isinstance(extra, dict):
+            extra = {}
+
+    access_token = str(extra.get("access_token") or getattr(account, "token", "") or "").strip()
+    refresh = extra.get("chatgpt_token_refresh")
+    last_refresh = refresh.get("at") if isinstance(refresh, dict) else ""
+    if not last_refresh:
+        updated_at = getattr(account, "updated_at", None)
+        last_refresh = updated_at.isoformat() if isinstance(updated_at, datetime) else updated_at
+    return {
+        "access_token": access_token,
+        "last_refresh": str(last_refresh or "").strip(),
+    }
+
+
+def _with_version_aliases(compare: dict[str, Any]) -> dict[str, Any]:
+    """把 compare 的 `direction` / `detail` 再以 `version_*` 名字暴露一份。
+
+    账号详情页（frontend `Accounts.tsx`）读的是 `version_direction` /
+    `version_detail`，而同步逻辑内部统一用 `direction` / `detail`。
+    """
+    merged = dict(compare)
+    merged["version_direction"] = str(compare.get("direction") or "unknown")
+    merged["version_detail"] = str(compare.get("detail") or "")
+    return merged
+
+
 def _build_remote_sync_result(
     account: Any,
     matched: dict[str, Any] | None,
@@ -279,12 +507,15 @@ def _build_remote_sync_result(
     api_key: str | None = None,
 ) -> dict[str, Any]:
     if not matched:
+        compare = _with_version_aliases(build_version_compare(_local_version_inputs(account), {"present": False}))
         return {
             "uploaded": False,
             "last_synced_at": synced_at,
             "message": "未在 CLIProxyAPI 找到匹配的 Codex auth-file",
             "remote_state": "not_found",
             "base_url": _base_url(api_url),
+            "remote_has_credentials": False,
+            **compare,
         }
 
     account_id = extract_chatgpt_account_id(account)
@@ -305,6 +536,19 @@ def _build_remote_sync_result(
         "remote_plan_type": str(((matched.get("id_token") or {}).get("plan_type") if isinstance(matched.get("id_token"), dict) else "") or "").strip(),
         "chatgpt_subscription_active_until": str(((matched.get("id_token") or {}).get("chatgpt_subscription_active_until") if isinstance(matched.get("id_token"), dict) else "") or "").strip(),
     }
+    remote.update(
+        _with_version_aliases(
+            build_version_compare(
+                _local_version_inputs(account),
+                {
+                    "present": True,
+                    "access_token": matched.get("access_token"),
+                    "expired": matched.get("expired"),
+                    "last_refresh": matched.get("last_refresh"),
+                },
+            )
+        )
+    )
     try:
         remote.update(
             _retry_sync_call(
