@@ -19,7 +19,7 @@ import {
   Switch,
   theme,
 } from 'antd'
-import type { MenuProps } from 'antd'
+import type { MenuProps, TableColumnsType } from 'antd'
 import {
   ReloadOutlined,
   CopyOutlined,
@@ -52,6 +52,126 @@ import {
 } from '@/lib/registerRetry'
 
 const { Text } = Typography
+
+// 后端账号相关响应体没有正式 schema（字段随平台/同步状态浮动），这里用宽松但显式的接口
+// 替代 any：既满足 no-explicit-any，又能对已知字段做类型检查。
+type UnknownRecord = Record<string, unknown>
+
+function asRecord(value: unknown): UnknownRecord {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as UnknownRecord) : {}
+}
+
+interface AuthProbe {
+  state?: string
+  message?: string
+  checked_at?: string
+}
+
+interface SubscriptionProbe {
+  plan?: string
+  workspace_plan_type?: string
+  checked_at?: string
+}
+
+interface CodexProbe {
+  state?: string
+  message?: string
+  checked_at?: string
+}
+
+interface ProbeSummary {
+  checked_at?: string
+  auth?: AuthProbe
+  subscription?: SubscriptionProbe
+  codex?: CodexProbe
+  [key: string]: unknown
+}
+
+interface SyncStatus {
+  uploaded?: boolean
+  uploaded_at?: string
+  last_attempt_ok?: boolean
+  last_attempt_at?: string
+  last_message?: string
+  [key: string]: unknown
+}
+
+interface CliproxySync extends SyncStatus {
+  remote_state?: string
+  status?: string
+  status_message?: string
+  name?: string
+  base_url?: string
+  last_synced_at?: string
+  local_at_expires_at?: string
+  remote_at_expires_at?: string
+  version_direction?: string
+  version_detail?: string
+  last_refresh?: string
+  next_retry_after?: string
+  last_probe_message?: string
+}
+
+interface AccountExtra {
+  extra?: UnknownRecord
+  sync_statuses?: UnknownRecord
+  chatgpt_local?: UnknownRecord
+  plus_check?: UnknownRecord
+  totp_secret?: string
+  refresh_token?: string
+  refreshToken?: string
+  [key: string]: unknown
+}
+
+interface RawAccount {
+  id: number
+  email: string
+  platform?: string
+  status?: string
+  token?: string
+  password?: string
+  region?: string
+  user_id?: string
+  cashier_url?: string
+  created_at?: string
+  extra_json?: string
+  [key: string]: unknown
+}
+
+interface NormalizedAccount extends RawAccount {
+  extra: AccountExtra
+  cpaSync: SyncStatus
+  sub2apiSync: SyncStatus
+  cliproxySync: CliproxySync
+  chatgptLocal: {
+    auth?: AuthProbe
+    subscription?: SubscriptionProbe
+    codex?: CodexProbe
+    [key: string]: unknown
+  }
+  plusCheck: PlusCheck
+  totpSecret: string
+}
+
+interface PlatformAction {
+  id: string
+  label: string
+  [key: string]: unknown
+}
+
+interface BatchActionResultItem {
+  id?: number
+  email?: string
+  ok?: boolean
+  message?: string
+}
+
+interface BatchActionResult {
+  total?: number
+  success?: number
+  failed?: number
+  items?: BatchActionResultItem[]
+}
 
 const STATUS_COLORS: Record<string, string> = {
   registered: 'default',
@@ -87,24 +207,24 @@ const TASK_BACKED_ACTIONS: Record<
   },
 }
 
-function parseExtraJson(raw: string | undefined) {
+function parseExtraJson(raw: string | undefined): AccountExtra {
   if (!raw) return {}
   try {
     const parsed = JSON.parse(raw)
-    return parsed && typeof parsed === 'object' ? parsed : {}
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as AccountExtra) : {}
   } catch {
     return {}
   }
 }
 
-function normalizeAccount(account: any) {
+function normalizeAccount(account: RawAccount): NormalizedAccount {
   const extra = parseExtraJson(account.extra_json)
-  const syncStatuses = extra.sync_statuses && typeof extra.sync_statuses === 'object' ? extra.sync_statuses : {}
-  const cpaSync = syncStatuses.cpa && typeof syncStatuses.cpa === 'object' ? syncStatuses.cpa : {}
-  const sub2apiSync = syncStatuses.sub2api && typeof syncStatuses.sub2api === 'object' ? syncStatuses.sub2api : {}
-  const cliproxySync = syncStatuses.cliproxyapi && typeof syncStatuses.cliproxyapi === 'object' ? syncStatuses.cliproxyapi : {}
-  const chatgptLocal = extra.chatgpt_local && typeof extra.chatgpt_local === 'object' ? extra.chatgpt_local : {}
-  const plusCheck = extra.plus_check && typeof extra.plus_check === 'object' ? extra.plus_check : {}
+  const syncStatuses = asRecord(extra.sync_statuses)
+  const cpaSync = asRecord(syncStatuses.cpa) as SyncStatus
+  const sub2apiSync = asRecord(syncStatuses.sub2api) as SyncStatus
+  const cliproxySync = asRecord(syncStatuses.cliproxyapi) as CliproxySync
+  const chatgptLocal = asRecord(extra.chatgpt_local) as NormalizedAccount['chatgptLocal']
+  const plusCheck = asRecord(extra.plus_check) as PlusCheck
   const totpSecret = String(extra.totp_secret || '')
   return {
     ...account,
@@ -315,11 +435,11 @@ function DetailSection({ title, children }: { title: string; children: React.Rea
   )
 }
 
-function LocalProbeSummary({ probe }: { probe: any }) {
+function LocalProbeSummary({ probe }: { probe: ProbeSummary }) {
   const checkedAt = probe?.checked_at || probe?.auth?.checked_at || probe?.subscription?.checked_at || probe?.codex?.checked_at
-  const auth = probe?.auth || {}
-  const subscription = probe?.subscription || {}
-  const codex = probe?.codex || {}
+  const auth: AuthProbe = probe?.auth || {}
+  const subscription: SubscriptionProbe = probe?.subscription || {}
+  const codex: CodexProbe = probe?.codex || {}
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -336,7 +456,7 @@ function LocalProbeSummary({ probe }: { probe: any }) {
   )
 }
 
-function cliproxyStateMeta(sync: any) {
+function cliproxyStateMeta(sync: CliproxySync) {
   if (!sync || Object.keys(sync).length === 0) {
     return { color: 'default', label: '未同步' }
   }
@@ -385,7 +505,7 @@ function cliproxyStateMeta(sync: any) {
   return { color: 'default', label: '未同步' }
 }
 
-function uploadSyncMeta(sync: any) {
+function uploadSyncMeta(sync: SyncStatus) {
   if (!sync || Object.keys(sync).length === 0) {
     return { color: 'default', label: '未上传' }
   }
@@ -401,7 +521,7 @@ function uploadSyncMeta(sync: any) {
   return { color: 'default', label: '未上传' }
 }
 
-function uploadSyncTitle(name: string, sync: any) {
+function uploadSyncTitle(name: string, sync: SyncStatus) {
   if (!sync || Object.keys(sync).length === 0) {
     return `${name} 未上传`
   }
@@ -438,7 +558,7 @@ function cliproxyVersionMeta(direction: string) {
   }
 }
 
-function CliproxySyncSummary({ sync }: { sync: any }) {
+function CliproxySyncSummary({ sync }: { sync: CliproxySync }) {
   const meta = cliproxyStateMeta(sync)
   const version = cliproxyVersionMeta(String(sync?.version_direction || ''))
   return (
@@ -485,14 +605,14 @@ function TotpSecretAlert({ secret }: { secret: string }) {
   )
 }
 
-function ActionMenu({ acc, onRefresh, actions }: { acc: any; onRefresh: () => void; actions: any[] }) {
+function ActionMenu({ acc, onRefresh, actions }: { acc: NormalizedAccount; onRefresh: () => void; actions: PlatformAction[] }) {
   const [resultOpen, setResultOpen] = useState(false)
   const [resultTitle, setResultTitle] = useState('')
   const [resultStatus, setResultStatus] = useState<'success' | 'error'>('success')
   const [resultText, setResultText] = useState('')
   const [resultUrl, setResultUrl] = useState('')
-  const [resultProbe, setResultProbe] = useState<any>(null)
-  const [resultCliproxySync, setResultCliproxySync] = useState<any>(null)
+  const [resultProbe, setResultProbe] = useState<ProbeSummary | null>(null)
+  const [resultCliproxySync, setResultCliproxySync] = useState<CliproxySync | null>(null)
   const [resultSecret, setResultSecret] = useState('')
   const [runningActionId, setRunningActionId] = useState<string | null>(null)
   const [taskModalTitle, setTaskModalTitle] = useState('')
@@ -505,8 +625,8 @@ function ActionMenu({ acc, onRefresh, actions }: { acc: any; onRefresh: () => vo
     status: 'success' | 'error',
     text: string,
     url = '',
-    probe: any = null,
-    cliproxySync: any = null,
+    probe: ProbeSummary | null = null,
+    cliproxySync: CliproxySync | null = null,
     secret = '',
   ) => {
     setResultTitle(title)
@@ -620,8 +740,8 @@ function ActionMenu({ acc, onRefresh, actions }: { acc: any; onRefresh: () => vo
         showResult(actionLabel, 'success', text, '', probe, cliproxySync)
       }
       onRefresh()
-    } catch (e: any) {
-      const detail = e?.message ? String(e.message) : '请求失败'
+    } catch (e) {
+      const detail = e instanceof Error && e.message ? String(e.message) : '请求失败'
       message.error({ content: detail, key: toastKey })
       showResult(actionLabel, 'error', detail)
     } finally {
@@ -753,8 +873,8 @@ export default function Accounts() {
   const { platform } = useParams<{ platform: string }>()
   const { token } = theme.useToken()
   const [currentPlatform, setCurrentPlatform] = useState(platform || 'chatgpt')
-  const [accounts, setAccounts] = useState<any[]>([])
-  const [platformActions, setPlatformActions] = useState<any[]>([])
+  const [accounts, setAccounts] = useState<NormalizedAccount[]>([])
+  const [platformActions, setPlatformActions] = useState<PlatformAction[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
@@ -771,7 +891,7 @@ export default function Accounts() {
   const [importModalOpen, setImportModalOpen] = useState(false)
   const [exportModalOpen, setExportModalOpen] = useState(false)
   const [detailModalOpen, setDetailModalOpen] = useState(false)
-  const [currentAccount, setCurrentAccount] = useState<any>(null)
+  const [currentAccount, setCurrentAccount] = useState<NormalizedAccount | null>(null)
 
   const [registerForm] = Form.useForm()
   const [addForm] = Form.useForm()
@@ -859,9 +979,9 @@ export default function Accounts() {
     message.success(`${label}已复制`)
   }
 
-  const getRefreshToken = (record: any): string => {
+  const getRefreshToken = (record: RawAccount): string => {
     try {
-      const extra = JSON.parse(record.extra_json || '{}')
+      const extra = JSON.parse(record.extra_json || '{}') as AccountExtra
       return extra.refresh_token || extra.refreshToken || ''
     } catch {
       return ''
@@ -910,8 +1030,8 @@ export default function Accounts() {
       setImportModalOpen(false)
       setImportText('')
       load()
-    } catch (e: any) {
-      message.error(`导入失败: ${e.message}`)
+    } catch (e) {
+      message.error(`导入失败: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setImportLoading(false)
     }
@@ -1006,6 +1126,7 @@ export default function Accounts() {
   }
 
   const handleDetailSave = async () => {
+    if (!currentAccount) return
     const values = await detailForm.validateFields()
     await apiFetch(`/accounts/${currentAccount.id}`, {
       method: 'PATCH',
@@ -1016,10 +1137,10 @@ export default function Accounts() {
     load()
   }
 
-  const showBatchActionResult = (title: string, result: any) => {
+  const showBatchActionResult = (title: string, result: BatchActionResult) => {
     const lines = (result.items || [])
-      .filter((item: any) => !item.ok)
-      .map((item: any) => `[${item.id || '-'}] ${item.email || '-'}: ${item.message || '失败'}`)
+      .filter((item) => !item.ok)
+      .map((item) => `[${item.id || '-'}] ${item.email || '-'}: ${item.message || '失败'}`)
 
     if (lines.length === 0) return
 
@@ -1099,8 +1220,8 @@ export default function Accounts() {
 
       showBatchActionResult(`${scopeLabel}${actionLabel}结果`, result)
       await load()
-    } catch (e: any) {
-      message.error({ content: `${actionLabel}失败: ${e.message}`, key: toastKey })
+    } catch (e) {
+      message.error({ content: `${actionLabel}失败: ${e instanceof Error ? e.message : String(e)}`, key: toastKey })
     } finally {
       setStatusSyncLoading('')
     }
@@ -1151,8 +1272,8 @@ export default function Accounts() {
 
       showBatchActionResult(`${scopeLabel}导入 CPA 结果`, result)
       await load()
-    } catch (e: any) {
-      message.error({ content: `导入 CPA 失败: ${e.message}`, key: toastKey })
+    } catch (e) {
+      message.error({ content: `导入 CPA 失败: ${e instanceof Error ? e.message : String(e)}`, key: toastKey })
     } finally {
       setCpaUploadLoading('')
     }
@@ -1296,13 +1417,13 @@ export default function Accounts() {
     background: token.colorFillAlter,
   }
 
-  const columns: any[] = [
+  const columns: TableColumnsType<NormalizedAccount> = [
     {
       title: '邮箱',
       dataIndex: 'email',
       key: 'email',
       width: 260,
-      render: (text: string, record: any) => (
+      render: (text: string, record) => (
         <div style={cellStackStyle}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
             <Text
@@ -1337,7 +1458,7 @@ export default function Accounts() {
       title: 'RT',
       key: 'refresh_token',
       width: 150,
-      render: (_: any, record: any) => {
+      render: (_, record) => {
         const rt = getRefreshToken(record)
         if (!rt) return <span style={{ color: 'var(--text-muted)' }}>-</span>
         return (
@@ -1365,10 +1486,10 @@ export default function Accounts() {
         title: '本地状态',
         key: 'chatgpt_local_state',
         width: 320,
-        render: (_: any, record: any) => {
-          const auth = record.chatgptLocal?.auth || {}
-          const subscription = record.chatgptLocal?.subscription || {}
-          const codex = record.chatgptLocal?.codex || {}
+        render: (_, record) => {
+          const auth: AuthProbe = record.chatgptLocal?.auth || {}
+          const subscription: SubscriptionProbe = record.chatgptLocal?.subscription || {}
+          const codex: CodexProbe = record.chatgptLocal?.codex || {}
           const cpaSync = record.cpaSync || {}
           const sub2apiSync = record.sub2apiSync || {}
           const authMeta = authStateMeta(auth.state)
@@ -1438,7 +1559,7 @@ export default function Accounts() {
         title: 'CPA',
         key: 'cpa_sync',
         width: 120,
-        render: (_: any, record: any) => {
+        render: (_, record) => {
           const cpaMeta = uploadSyncMeta(record.cpaSync || {})
           return (
             <Tag color={cpaMeta.color} title={uploadSyncTitle('CPA', record.cpaSync || {})}>
@@ -1496,7 +1617,7 @@ export default function Accounts() {
       key: 'action',
       width: 150,
       fixed: isChatgptPlatform ? 'right' : undefined,
-      render: (_: any, record: any) => (
+      render: (_, record) => (
         <Space size={4} wrap>
           <Button type="link" size="small" onClick={() => { setCurrentAccount(record); setDetailModalOpen(true); }}>
             详情

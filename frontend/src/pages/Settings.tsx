@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { App, Card, Form, Input, Select, Button, message, Tabs, Space, Tag, Typography, Modal, QRCode, Switch, Table } from 'antd'
+import type { FormInstance, TableColumnsType } from 'antd'
 import {
   SaveOutlined,
   EyeOutlined,
@@ -479,6 +480,12 @@ function splitMailboxSections(sections: SectionConfig[], mailProvider: string) {
   }
 }
 
+function formatSyncTime(value?: string) {
+  if (!value) return ''
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
+
 function formatResultText(data: unknown) {
   if (typeof data === 'string') return data
   try {
@@ -513,7 +520,9 @@ function parseStoredDomainList(value: unknown): string[] {
     if (Array.isArray(parsed)) {
       return normalizeDomainList(parsed)
     }
-  } catch {}
+  } catch {
+    // 不是 JSON 就走下面按行/逗号拆分的分支
+  }
 
   return normalizeDomainList(
     text
@@ -585,7 +594,7 @@ function ConfigSection({ section }: { section: SectionConfig }) {
   )
 }
 
-function CFWorkerDomainPoolSection({ form }: { form: any }) {
+function CFWorkerDomainPoolSection({ form }: { form: FormInstance }) {
   const watchedDomains = Form.useWatch('cfworker_domains', form) || []
   const watchedEnabledDomains = Form.useWatch('cfworker_enabled_domains', form) || []
   const normalizedDomains = normalizeDomainList(watchedDomains)
@@ -722,7 +731,7 @@ interface SmsCountryRow {
   openai_sms_whitelisted: boolean
 }
 
-function SmsProbePanel({ form }: { form: any }) {
+function SmsProbePanel({ form }: { form: FormInstance }) {
   const [balance, setBalance] = useState<number | null>(null)
   const [countries, setCountries] = useState<SmsCountryRow[]>([])
   const [loading, setLoading] = useState<'' | 'balance' | 'countries'>('')
@@ -749,8 +758,8 @@ function SmsProbePanel({ form }: { form: any }) {
         setCountries(data.items || [])
         message.success(`已获取 ${(data.items || []).length} 个国家`)
       }
-    } catch (err: any) {
-      message.error(err?.message || '接码平台探测失败')
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '接码平台探测失败')
     } finally {
       setLoading('')
     }
@@ -802,9 +811,21 @@ function SolverStatus() {
   }
 
   useEffect(() => {
-    checkSolver()
-    const timer = window.setInterval(checkSolver, 5000)
-    return () => window.clearInterval(timer)
+    let active = true
+    const tick = async () => {
+      try {
+        const d = await apiFetch('/solver/status')
+        if (active) setRunning(d.running)
+      } catch {
+        if (active) setRunning(false)
+      }
+    }
+    tick()
+    const timer = window.setInterval(tick, 5000)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
   }, [])
 
   return (
@@ -838,13 +859,47 @@ function SolverStatus() {
   )
 }
 
+interface IntegrationService {
+  name: string
+  label: string
+  running?: boolean
+  configured?: boolean
+  reachable?: boolean
+  url?: string
+  auth_file_count?: number
+  management_url?: string
+  management_key?: string
+  message?: string
+  [key: string]: unknown
+}
+
+interface CpaSyncReportItem {
+  id?: number
+  email?: string
+  local?: { at_expires_at?: string; last_refresh?: string; [key: string]: unknown }
+  remote?: { at_expires_at?: string; last_refresh?: string; [key: string]: unknown }
+  direction?: string
+  direction_label?: string
+  detail?: string
+  [key: string]: unknown
+}
+
+interface CpaSyncReport {
+  reachable?: boolean
+  message?: string
+  total?: number
+  counts?: Record<string, number>
+  remote_auth_file_count?: number
+  items?: CpaSyncReportItem[]
+  [key: string]: unknown
+}
+
 function IntegrationsPanel() {
-  const [items, setItems] = useState<any[]>([])
+  const [items, setItems] = useState<IntegrationService[]>([])
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState('')
-  const [report, setReport] = useState<any>(null)
+  const [report, setReport] = useState<CpaSyncReport | null>(null)
   const [reportLoading, setReportLoading] = useState(false)
-  const saved = false
   const [resultModal, setResultModal] = useState({
     open: false,
     title: '',
@@ -877,16 +932,17 @@ function IntegrationsPanel() {
     return () => window.clearInterval(timer)
   }, [])
 
-  const doAction = async (key: string, request: Promise<any>, successText = '操作完成') => {
+  const doAction = async (key: string, request: Promise<unknown>, successText = '操作完成') => {
     setBusy(key)
     try {
       const result = await request
       await load()
       message.success(successText)
       showResultModal('操作结果', result, true)
-    } catch (e: any) {
-      message.error(e?.message || '操作失败')
-      showResultModal('操作结果', e?.message || e || '操作失败', false)
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e)
+      message.error(detail || '操作失败')
+      showResultModal('操作结果', detail || '操作失败', false)
       await load()
     } finally {
       setBusy('')
@@ -903,9 +959,10 @@ function IntegrationsPanel() {
       message.success(`${label} 回填完成：成功 ${d.success} / ${d.total}`)
       showResultModal(`${label} 回填结果`, d, true)
       await loadReport()
-    } catch (e: any) {
-      message.error(e?.message || `${label} 回填失败`)
-      showResultModal(`${label} 回填结果`, e?.message || e || `${label} 回填失败`, false)
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e)
+      message.error(detail || `${label} 回填失败`)
+      showResultModal(`${label} 回填结果`, detail || `${label} 回填失败`, false)
     } finally {
       setBusy('')
     }
@@ -922,8 +979,8 @@ function IntegrationsPanel() {
       if (d.reachable === false) {
         message.warning(d.message || 'CPA 面板不可达，无法对比')
       }
-    } catch (e: any) {
-      message.error(e?.message || '对比失败')
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : '对比失败')
     } finally {
       setReportLoading(false)
     }
@@ -949,9 +1006,10 @@ function IntegrationsPanel() {
       }
       showResultModal(`${label}结果`, d, !d.failed)
       await loadReport()
-    } catch (e: any) {
-      message.error(e?.message || '同步失败')
-      showResultModal('账号同步结果', e?.message || e || '同步失败', false)
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e)
+      message.error(detail || '同步失败')
+      showResultModal('账号同步结果', detail || '同步失败', false)
     } finally {
       setBusy('')
     }
@@ -972,38 +1030,79 @@ function IntegrationsPanel() {
     ['unknown', '无法比较', 'default'],
   ]
 
+  const reportColumns: TableColumnsType<CpaSyncReportItem> = [
+    { title: '邮箱', dataIndex: 'email', key: 'email', width: 240, ellipsis: true },
+    {
+      title: '本地 AT 过期',
+      key: 'local_at',
+      width: 170,
+      render: (_, row) => formatSyncTime(row.local?.at_expires_at) || '-',
+    },
+    {
+      title: '远端 AT 过期',
+      key: 'remote_at',
+      width: 170,
+      render: (_, row) => formatSyncTime(row.remote?.at_expires_at) || '-',
+    },
+    {
+      title: '本地刷新',
+      key: 'local_refresh',
+      width: 170,
+      render: (_, row) => formatSyncTime(row.local?.last_refresh) || '-',
+    },
+    {
+      title: '远端刷新',
+      key: 'remote_refresh',
+      width: 170,
+      render: (_, row) => formatSyncTime(row.remote?.last_refresh) || '-',
+    },
+    {
+      title: '判定',
+      key: 'direction',
+      width: 120,
+      render: (_, row) => {
+        const color =
+          row.direction === 'in_sync'
+            ? 'success'
+            : row.direction === 'local_newer' || row.direction === 'remote_newer'
+              ? 'processing'
+              : row.direction === 'unreachable'
+                ? 'error'
+                : row.direction === 'unknown'
+                  ? 'default'
+                  : 'warning'
+        return (
+          <Tag color={color} title={row.detail || ''}>
+            {row.direction_label || row.direction}
+          </Tag>
+        )
+      },
+    },
+    {
+      title: '说明',
+      dataIndex: 'detail',
+      key: 'detail',
+      ellipsis: true,
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 90,
+      render: (_, row) => (
+        <Button
+          size="small"
+          type="link"
+          loading={busy === `sync-auto-${row.id}`}
+          onClick={() => row.id != null && runSync('auto', row.id)}
+        >
+          同步
+        </Button>
+      ),
+    },
+  ]
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {false ? (
-        <div
-          style={{
-            position: 'fixed',
-            left: '50%',
-            bottom: 24,
-            transform: 'translateX(-50%)',
-            zIndex: 1000,
-            width: 'min(720px, calc(100vw - 32px))',
-            pointerEvents: 'none',
-          }}
-        >
-          <div
-            style={{
-              width: '100%',
-              padding: 0,
-              borderRadius: 0,
-              border: 'none',
-              background: 'transparent',
-              boxShadow: 'none',
-              backdropFilter: 'none',
-              pointerEvents: 'auto',
-            }}
-          >
-            <Button type="primary" icon={<SaveOutlined />} onClick={() => {}} loading={false} block size="large">
-              {saved ? '已保存 ✓' : '保存配置'}
-            </Button>
-          </div>
-        </div>
-      ) : null}
       <Modal
         open={resultModal.open}
         title={resultModal.title}
@@ -1136,80 +1235,11 @@ function IntegrationsPanel() {
               )}
               <Table
                 size="small"
-                rowKey={(row: any) => String(row.id ?? row.email)}
+                rowKey={(row) => String(row.id ?? row.email)}
                 dataSource={report.items || []}
                 pagination={{ pageSize: 20, showSizeChanger: false }}
                 scroll={{ x: 900 }}
-                columns={[
-                  { title: '邮箱', dataIndex: 'email', key: 'email', width: 240, ellipsis: true },
-                  {
-                    title: '本地 AT 过期',
-                    key: 'local_at',
-                    width: 170,
-                    render: (_: any, row: any) => formatSyncTime(row.local?.at_expires_at) || '-',
-                  },
-                  {
-                    title: '远端 AT 过期',
-                    key: 'remote_at',
-                    width: 170,
-                    render: (_: any, row: any) => formatSyncTime(row.remote?.at_expires_at) || '-',
-                  },
-                  {
-                    title: '本地刷新',
-                    key: 'local_refresh',
-                    width: 170,
-                    render: (_: any, row: any) => formatSyncTime(row.local?.last_refresh) || '-',
-                  },
-                  {
-                    title: '远端刷新',
-                    key: 'remote_refresh',
-                    width: 170,
-                    render: (_: any, row: any) => formatSyncTime(row.remote?.last_refresh) || '-',
-                  },
-                  {
-                    title: '判定',
-                    key: 'direction',
-                    width: 120,
-                    render: (_: any, row: any) => {
-                      const color =
-                        row.direction === 'in_sync'
-                          ? 'success'
-                          : row.direction === 'local_newer' || row.direction === 'remote_newer'
-                            ? 'processing'
-                            : row.direction === 'unreachable'
-                              ? 'error'
-                              : row.direction === 'unknown'
-                                ? 'default'
-                                : 'warning'
-                      return (
-                        <Tag color={color} title={row.detail || ''}>
-                          {row.direction_label || row.direction}
-                        </Tag>
-                      )
-                    },
-                  },
-                  {
-                    title: '说明',
-                    dataIndex: 'detail',
-                    key: 'detail',
-                    ellipsis: true,
-                  },
-                  {
-                    title: '操作',
-                    key: 'action',
-                    width: 90,
-                    render: (_: any, row: any) => (
-                      <Button
-                        size="small"
-                        type="link"
-                        loading={busy === `sync-auto-${row.id}`}
-                        onClick={() => runSync('auto', row.id)}
-                      >
-                        同步
-                      </Button>
-                    ),
-                  },
-                ]}
+                columns={reportColumns}
               />
             </>
           ) : (
@@ -1242,7 +1272,9 @@ function SecurityPanel() {
     try {
       const s = await apiFetch('/auth/status')
       setStatus(s)
-    } catch {}
+    } catch {
+      // 状态拉取失败时保持既有值，交给页面其它交互重试
+    }
   }
 
   useEffect(() => { loadStatus() }, [])
@@ -1262,8 +1294,8 @@ function SecurityPanel() {
       msg.success('密码保护已启用')
       enableForm.resetFields()
       await loadStatus()
-    } catch (e: any) {
-      msg.error(e.message)
+    } catch (e) {
+      msg.error(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
     }
@@ -1276,8 +1308,8 @@ function SecurityPanel() {
       localStorage.removeItem('auth_token')
       msg.success('密码保护已关闭')
       await loadStatus()
-    } catch (e: any) {
-      msg.error(e.message)
+    } catch (e) {
+      msg.error(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
     }
@@ -1296,8 +1328,8 @@ function SecurityPanel() {
       })
       msg.success('密码已更新')
       pwForm.resetFields()
-    } catch (e: any) {
-      msg.error(e.message)
+    } catch (e) {
+      msg.error(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
     }
@@ -1310,8 +1342,8 @@ function SecurityPanel() {
       setTotpSecret(d.secret)
       setTotpUri(d.uri)
       setTotpSetupState('setup')
-    } catch (e: any) {
-      msg.error(e.message)
+    } catch (e) {
+      msg.error(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
     }
@@ -1328,8 +1360,8 @@ function SecurityPanel() {
       setTotpSetupState('idle')
       codeForm.resetFields()
       await loadStatus()
-    } catch (e: any) {
-      msg.error(e.message)
+    } catch (e) {
+      msg.error(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
     }
@@ -1341,8 +1373,8 @@ function SecurityPanel() {
       await apiFetch('/auth/2fa/disable', { method: 'POST' })
       msg.success('双因素认证已关闭')
       await loadStatus()
-    } catch (e: any) {
-      msg.error(e.message)
+    } catch (e) {
+      msg.error(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
     }
