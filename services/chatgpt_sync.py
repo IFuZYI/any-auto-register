@@ -34,16 +34,22 @@ def _get_config_value(key: str, default: str = "") -> str:
 
 
 def _resolve_cliproxy_target(api_url: str | None = None, api_key: str | None = None) -> tuple[str | None, str | None]:
+    """解析 CPA / CLIProxyAPI 的目标地址与密钥。
+
+    CPA 配置（`cpa_api_url` / `cpa_api_key`）是主配置 —— 插件页、状态同步、
+    回填、上传走的都是同一个远端面板。旧的 `cliproxyapi_*` 键留作兜底，
+    老部署不填 CPA 那两项时仍能跑。
+    """
     resolved_url = (
         str(api_url or "").strip()
-        or _get_config_value("cliproxyapi_base_url")
         or _get_config_value("cpa_api_url")
+        or _get_config_value("cliproxyapi_base_url")
         or None
     )
     resolved_key = (
         str(api_key or "").strip()
-        or _get_config_value("cliproxyapi_management_key")
         or _get_config_value("cpa_api_key")
+        or _get_config_value("cliproxyapi_management_key")
         or None
     )
     return resolved_url, resolved_key

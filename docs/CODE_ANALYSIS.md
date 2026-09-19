@@ -4,6 +4,8 @@
 >
 > 分析基线:提交 `dfc697c`(2026-09-02),Python + TypeScript 约 58,500 行 / 288 个受版本控制文件。
 >
+> ⚠️ **部分章节已过时**:第十二章的「外部插件管理」一节描述的是**已被删除的本地插件安装/进程管理实现**(`_SERVICE_META` / `_ext_targets` / `go run` / 安装/卸载/启停端点)。插件页自 2026-09 起改为**直连远程 CPA 面板**,现实现见 `services/external_apps.py`(只读连接器)、`services/cpa_account_sync.py`(双向版本同步)与 `api/integrations.py`,行为说明见 README §6.1 / §6.2。其余章节的分析基线未变,仍然有效。
+>
 > ⚠️ 本文档只描述代码**事实上实现了什么**,不构成对其用途的推荐。项目涉及自动化注册、验证码绕过、指纹伪装等技术,合规责任在使用者。
 
 ## 目录
@@ -208,7 +210,7 @@ SUPPORTED_PLATFORMS = ("chatgpt", "icloud")
 | 04 ChatGPT 平台 | authorize 状态机、Sentinel PoW、TLS 指纹、注册模式矩阵、接码、2FA、Token 生命周期 |
 | 05 邮箱池子系统 | 全部临时邮箱 provider、OTP 提取、LuckMail、邮件导入、Outlook 后端 |
 | 06 iCloud 平台 | Apple SRP 登录、双重认证、Cookie 导入、Hide My Email 生成与限流、免登录分享页 |
-| 07 外部集成服务层 | 插件管理、CLIProxyAPI 同步、账号导出格式、付费渠道、部署形态与环境变量 |
+| 07 外部集成服务层 | 远程 CPA 面板连接器、CLIProxyAPI 状态同步与账号双向同步、账号导出格式、付费渠道、部署形态与环境变量 |
 | 08 前端 | 路由与页面地图、鉴权与请求层、注册任务页表单、实时日志、状态管理 |
 
 ---
@@ -319,6 +321,21 @@ SUPPORTED_PLATFORMS = ("chatgpt", "icloud")
 
 ##### 外部服务集成 `api/integrations.py`
 
+> ⚠️ 2026-09 插件改版后的**现行**端点(旧的启停/安装/卸载端点已删除,详见第十二节开头):
+
+| 方法 | 路径 | 处理函数 | 作用 |
+|---|---|---|---|
+| GET | `/api/integrations/services` | `api/integrations.py:87` get_services | 返回远程 CPA 面板的连接状态快照 |
+| POST | `/api/integrations/services/{name}/test` | `api/integrations.py:92` test_service | 主动测一次远端管理接口 |
+| POST | `/api/integrations/sync/report` | `api/integrations.py:100` sync_report | **只读**对比本地账号与远端 auth-file 的版本,不写库 |
+| POST | `/api/integrations/sync/accounts` | `api/integrations.py:110` sync_accounts | 按对比结果双向同步(`auto` / `push_only` / `pull_only`) |
+| POST | `/api/integrations/backfill` | `api/integrations.py:123` backfill_integrations | 把已有账号回灌到 CPA(本地有、远端没有的) |
+
+选号条件三处共用 `AccountQuery`(`:17-25`):`platforms` / `account_ids` / `status` / `email` / `plus_status` / `limit`。
+
+<details>
+<summary>改版前的端点(已删除,仅作历史参考)</summary>
+
 | 方法 | 路径 | 处理函数 | 作用 |
 |---|---|---|---|
 | GET | `/api/integrations/services` | `api/integrations.py:27` get_services | 列出外部子服务及其运行状态 |
@@ -329,6 +346,8 @@ SUPPORTED_PLATFORMS = ("chatgpt", "icloud")
 | POST | `/api/integrations/services/{name}/uninstall` | `api/integrations.py:52` uninstall_service | 卸载指定外部服务 |
 | POST | `/api/integrations/services/{name}/stop` | `api/integrations.py:57` stop_service | 停止指定外部服务 |
 | POST | `/api/integrations/backfill` | `api/integrations.py:62` backfill_integrations | 把已有账号回灌到 CPA / CLIProxyAPI |
+
+</details>
 
 ##### 鉴权 `api/auth.py`
 
@@ -548,7 +567,7 @@ class ConfigItem(SQLModel, table=True):
 | iCloud | `icloud_region`、`icloud_alias_label`、`icloud_account_email`、`public_base_url`（面板对外访问地址，隐私邮箱导号池时拼免登录链接用；平时前端会把浏览器地址栏的 origin 带上来，只有服务端单独跑时才靠它兜底） |
 | 短信接码 | `sms_*`（共 16 项，含自动选国、价格上限、复用策略） |
 | 贡献系统 | `contribution_*`、`custom_contribution_*` |
-| 执行器 | `default_executor`、`register_retry_times`、`external_apps_update_mode` |
+| 执行器 | `default_executor`、`register_retry_times`(以及 2026-09 起已无界面入口的死配置 `external_apps_update_mode`) |
 
 `GET /api/config` 还承担**默认值兜底**职责（`api/config.py:147-192`）：对 `applemail_base_url`、`luckmail_base_url`、`outlook_backend`、`sms_provider` 等十余项，值为空时填入内置默认；并做历史值迁移（`mail_provider == "outlook"` 统一改写为 `"microsoft"`，`api/config.py:149-150`）。
 
@@ -5925,6 +5944,21 @@ iCloud 不是传统"注册"。这里的"注册"**= 从已登录主号生成一�
 
 ## 十二、外部集成服务层与部署
 
+> ⚠️ **本节大部分内容已过时(2026-09 插件改版)**。下面描述的"本地 clone CLIProxyAPI + `go run` + 进程启停"实现已被整体删除,`services/external_apps.py` 现在只是一个**远程 CPA 面板连接器**(`resolve_target` / `management_url` / `probe` / `status_one` / `list_status` / `test_connection`,无任何安装或进程管理代码)。
+>
+> 现行为:
+>
+> | 能力 | 现实现 |
+> | --- | --- |
+> | 插件页状态 / 测试连接 | `services/external_apps.py` 探 `GET {cpa_api_url}/v0/management/auth-files`;状态分「已连接 / Key 无效 / 不可达 / 未配置」 |
+> | 打开管理页 | `{cpa_api_url}/management.html`,前端 `window.open` |
+> | 回填(本地 → 远端缺失) | `services/chatgpt_sync.py:backfill_chatgpt_account_to_cpa`,与改版前一致 |
+> | 账号版本对比 | `services/cliproxyapi_sync.py:build_version_compare`(AT 的 JWT `exp` 优先,退回 `last_refresh`,容差 60s) |
+> | 双向同步 | `services/cpa_account_sync.py`(谁新听谁的;`auto` / `push_only` / `pull_only`) |
+> | 对外端点 | `GET /api/integrations/services`、`POST /api/integrations/services/{name}/test`、`POST /api/integrations/sync/report`、`POST /api/integrations/sync/accounts`、`POST /api/integrations/backfill` |
+>
+> 配置仍是 `cpa_api_url` / `cpa_api_key` 为主、`cliproxyapi_base_url` / `cliproxyapi_management_key` 兜底。下文保留的是**改版前**的分析,只作历史参考。
+
 ### 外部插件管理(services/external_apps.py)
 
 #### 支持的插件清单
@@ -5957,6 +5991,8 @@ iCloud 不是传统"注册"。这里的"注册"**= 从已登录主号生成一�
 `parents[2]` 这个相对定位是个坑:仓库放在 `/opt/app/any-auto-register` 时 `_ext_targets` 落在 `/opt/app/_ext_targets`。Docker 完整版镜像里对应挂载 `/_ext_targets`(`Dockerfile:71,76`、`docker-compose.yml:32`),因为 WORKDIR 是 `/app`,`parents[2]` 正好是 `/`。
 
 #### 安装/更新策略:semver tag 还是分支 HEAD
+
+> ⚠️ 2026-09:整节已随本地插件删除,`install` / `uninstall` / 启停与 `external_apps_update_mode` 都不复存在,仅作历史参考。
 
 `install(name)`(`services/external_apps.py:340`)加锁后调 `_sync_repo_to_latest`(`services/external_apps.py:227`):
 
@@ -6017,20 +6053,21 @@ iCloud 不是传统"注册"。这里的"注册"**= 从已登录主号生成一�
 | 与后端同机同网 | health/url 全部写死 `127.0.0.1:8317` | 插件跑在别的容器/主机时状态永远是"未运行";此时应改用 `cliproxyapi_base_url` 配置项走同步链路,而不是插件页 |
 | conda 环境 | `main.py:28` 期望 `APP_CONDA_ENV`(默认 `any-auto-register`),Windows 启动脚本用 `conda run` 解析 python 路径 | Docker 里靠 `APP_CONDA_ENV=docker` 跳过告警(`main.py:48-49`) |
 
+> ⚠️ 上表整块**已随本地插件删除而失效**(2026-09)。现在没有"插件跑在哪台机器"的问题:面板地址由 `cpa_api_url` 决定,状态就是一次 HTTP 探测的结果。
+
 #### 对外 API(api/integrations.py)
+
+> ⚠️ 2026-09 插件改版后的**现行**端点见本章开头第十二节的表格与第二节 `api/integrations.py` 小节;下面的启停/安装/卸载端点已删除。
 
 | 方法 | 路径 | 实现 |
 | --- | --- | --- |
-| GET | `/api/integrations/services` | `list_status()`,`api/integrations.py:26-28` |
-| POST | `/api/integrations/services/start-all` | `api/integrations.py:31-33` |
-| POST | `/api/integrations/services/stop-all` | `api/integrations.py:36-38` |
-| POST | `/api/integrations/services/{name}/start` | `api/integrations.py:41-43` |
-| POST | `/api/integrations/services/{name}/install` | `api/integrations.py:46-48` |
-| POST | `/api/integrations/services/{name}/uninstall` | `api/integrations.py:51-53` |
-| POST | `/api/integrations/services/{name}/stop` | `api/integrations.py:56-58` |
+| GET | `/api/integrations/services` | `list_status()`,`api/integrations.py:87` |
+| POST | `/api/integrations/services/{name}/test` | `test_connection()`,`api/integrations.py:92` |
+| POST | `/api/integrations/sync/report` | `build_cpa_sync_report()`,`api/integrations.py:100` |
+| POST | `/api/integrations/sync/accounts` | `sync_chatgpt_accounts_with_cpa()`,`api/integrations.py:110` |
 | POST | `/api/integrations/backfill` | 批量补传,见下一节 |
 
-前端入口在 `frontend/src/pages/Settings.tsx:886`(读列表)、`1029-1113`(启停/安装/卸载/回填按钮)。安装模式切换写的是 `external_apps_update_mode` 配置(`frontend/src/pages/Settings.tsx:936`)。
+前端入口在 `frontend/src/pages/Settings.tsx:841`(`IntegrationsPanel`:15s 轮询状态、测试连接、打开管理页、回填、对比表格与三种模式的同步按钮)。旧的 `external_apps_update_mode` 安装策略配置已从界面移除(`api/config.py:125,177-178` 的键仍在,属未清理的死配置)。
 
 
 ### CLIProxyAPI / CPA 同步
@@ -6081,8 +6118,22 @@ CLIProxyAPI 用"一个 JSON 文件 = 一个可用凭证"的模型,管理接口 `
 | 429 | `quota_exhausted` |
 | 其它 | `probe_failed` |
 | 缺 auth_index 或缺 account_id | `probe_skipped`(不发请求) |
-| 列 auth-files 或探测抛异常 | `unreachable` |
-| 邮箱没匹配到任何 codex auth-file | `not_found` |
+
+**方向 C(双向,谁新听谁的)** — `services/cpa_account_sync.py`(2026-09 新增):
+
+| 函数 | 职责 |
+| --- | --- |
+| `build_cpa_sync_report(accounts, ...)` | 只读报告:拉一次 auth-file 清单,逐个算版本,不探测、不写库;面板不可达时每个账号填 `direction="unreachable"` |
+| `sync_chatgpt_account_with_cpa(account, mode=...)` | 单账号:对比 → 决定 push / pull / skip → 记账到 `extra.sync_statuses.cpa_sync` |
+| `sync_chatgpt_accounts_with_cpa(accounts, ...)` | 批量壳子:auth-file 只拉一次,账号之间 sleep `BATCH_PROBE_DELAY_SECONDS` |
+
+版本判据(`build_version_compare`,`services/cliproxyapi_sync.py`):本地/远端都优先取 **AT 的 JWT `exp`**,解不出来才退回 `last_refresh`;差值在 `VERSION_TOLERANCE_SECONDS = 60` 内算 `in_sync`,否则按正负判 `local_newer` / `remote_newer`;两边有一侧没有条目则是 `missing_remote` / `missing_local`。`_parse_time_value` 统一吃 `+08:00` / `Z` / 裸串(按东八区)/ epoch 秒 / epoch 毫秒。
+
+推送(`_push`)前必须先 `probe_local_chatgpt_status` 且 `auth.state == "access_token_valid"` 才允许上传,上传后再 `_resync` 复核一次;拉取(`_pull`)在远端状态属于 `access_token_invalidated` / `unauthorized` / `account_deactivated` 时直接拒绝,且远端条目没带 `access_token` 时只报"无法拉取"。
+
+**响应结构里不能出现 AT 原文**:报告与同步结果都会原样回给前端,本地侧统一走 `_local_report_view()`(只给 `has_access_token` / `at_expires_at` / `last_refresh`),`_local_inputs()` 的 `access_token` 不得直接进返回值。
+
+`remote_state` 枚举还有两个非探测来源:`unreachable`(列 auth-files 或探测抛异常)、`not_found`(邮箱没匹配到任何 codex auth-file)。
 
 错误信息提取做了三层兜底:响应头 `X-Openai-Ide-Error-Code`、body JSON 的 `error.code`、以及 base64 编码的 `X-Error-Json` 头解出来的 `error.code/message`(`services/cliproxyapi_sync.py:64-105`)。
 
@@ -6136,7 +6187,8 @@ CLIProxyAPI 用"一个 JSON 文件 = 一个可用凭证"的模型,管理接口 `
 | --- | --- | --- |
 | `cpa` | `record_cpa_sync_result` | `last_attempt_ok` / `last_message` / `last_attempt_at` / `uploaded`(粘性 OR) / `uploaded_at`(`:95-114`) |
 | `sub2api` | `record_sub2api_sync_result` | 同上 |
-| `cliproxyapi` | `record_cliproxy_sync_result` | **整体覆盖**为最新一次同步结果 dict(`:125-131`) |
+| `cliproxyapi` | `record_cliproxy_sync_result` | **整体覆盖**为最新一次同步结果 dict(`:125-131`),其中含 `build_version_compare` 的结果:`direction` / `detail` 与 `version_direction` / `version_detail` 两套别名(前端读后者)、`local_at_expires_at` / `remote_at_expires_at` / `local_last_refresh` / `remote_last_refresh` / `remote_has_credentials` |
+| `cpa_sync` | `cpa_account_sync._record_sync_action` | 双向同步的动作记账:`last_action`(push/pull/skip)、`direction`、`last_attempt_ok`、`last_message`、`last_attempt_at`。与上面几个桶**并列**存在;`api/actions.py:_merge_extra_patch` 递归合并 dict,不会把它冲掉 |
 
 `uploaded` 字段对 cpa/sub2api 是"一旦成功就永久为真"的粘性标记(`:108`),对 cliproxyapi 则每次被覆盖,含义是"这一次是否匹配到远端 auth-file"。
 
@@ -6595,9 +6647,9 @@ api/payments.py ──► services/payment_channels/service.py
 | Camoufox 版本参数 | build args `CAMOUFOX_VERSION=135.0.1` / `CAMOUFOX_RELEASE=beta.24`(`Dockerfile:16-17`,compose 里可覆盖) | 无 |
 | Turnstile Solver | 开启,`APP_ENABLE_SOLVER=1` | 关闭,`APP_ENABLE_SOLVER=0`(`Dockerfile.server:37`) |
 | EXPOSE | `8000 8889`(`Dockerfile:74`) | `8000`(`Dockerfile.server:61`) |
-| VOLUME | `/runtime`, `/_ext_targets`(`Dockerfile:76`) | `/runtime`(`Dockerfile.server:63`) |
+| VOLUME | `/runtime`, `/_ext_targets`(`Dockerfile:76`;后者自 2026-09 起无使用方) | `/runtime`(`Dockerfile.server:63`) |
 | entrypoint 命令 | `xvfb-run -a --server-args="-screen 0 1920x1080x24" python main.py`(`docker/entrypoint.sh:22`) | `python main.py`(`docker/entrypoint.server.sh:26`) |
-| 适用场景 | 需要有头/无头浏览器、Turnstile Solver、CLIProxyAPI 插件(要 git+go)的桌面或大机器 | 只跑 Web UI + ChatGPT/iCloud 纯协议注册的小 VPS(2 核 2G 也能一两分钟构建完) |
+| 适用场景 | 需要有头/无头浏览器、Turnstile Solver 的桌面或大机器 | 只跑 Web UI + ChatGPT/iCloud 纯协议注册的小 VPS(2 核 2G 也能一两分钟构建完) |
 
 #### 为什么无头版能砍掉浏览器栈
 
@@ -6609,8 +6661,8 @@ api/payments.py ──► services/payment_channels/service.py
 
 | 项 | `docker-compose.yml` | `docker-compose.server.yml` |
 | --- | --- | --- |
-| 端口 | `8000:8000`(**绑 0.0.0.0**)、`127.0.0.1:8889:8889`、`${CLIPROXYAPI_PORT_BIND:-8317}:8317`(`:26-29`) | 只 `${APP_PORT_BIND:-127.0.0.1:8000}:8000`(`:26-27`) |
-| 卷 | `${APP_RUNTIME_BIND:-./data}:/runtime`、`${APP_EXT_TARGETS_BIND:-./_ext_targets}:/_ext_targets`、`${APP_EXTERNAL_LOGS_BIND:-./external_logs}:/app/services/external_logs`(`:30-33`) | 只 `${APP_RUNTIME_BIND:-./data}:/runtime`(`:28-29`) |
+| 端口 | `8000:8000`(**绑 0.0.0.0**)、`127.0.0.1:8889:8889`、`${CLIPROXYAPI_PORT_BIND:-8317}:8317`(`:26-29`;8317 映射自 2026-09 起已无使用方) | 只 `${APP_PORT_BIND:-127.0.0.1:8000}:8000`(`:26-27`) |
+| 卷 | `${APP_RUNTIME_BIND:-./data}:/runtime`、`${APP_EXT_TARGETS_BIND:-./_ext_targets}:/_ext_targets`、`${APP_EXTERNAL_LOGS_BIND:-./external_logs}:/app/services/external_logs`(`:30-33`;后两个自 2026-09 起已无使用方) | 只 `${APP_RUNTIME_BIND:-./data}:/runtime`(`:28-29`) |
 | `shm_size` | `1gb`(浏览器需要)(`:34`) | 不设 |
 | `DATABASE_URL` | 不设(靠 entrypoint 做符号链接到 `/app/account_manager.db`) | 显式 `sqlite:////runtime/account_manager.db`(`:23`) |
 | 其它 env | `APP_CONDA_ENV=docker`、solver 四项、`SOLVER_BROWSER_TYPE`、`PLAYWRIGHT_HEADLESS` 可覆盖 | `APP_ENABLE_SOLVER=0`,无 solver/conda 项 |
@@ -6618,6 +6670,8 @@ api/payments.py ──► services/payment_channels/service.py
 | 共同点 | `init: true`、`restart: unless-stopped`、`container_name: any-auto-register`、`CREDENTIAL_ENCRYPTION_KEY_FILE=/runtime/.secrets/credential_key` | 同 |
 
 无头版注释解释了两条取舍(`docker-compose.server.yml:3-6`):不映射 8317 是为了不和宿主机已有的 CLIProxyAPI 抢端口;端口默认只绑 `127.0.0.1`,由宿主机反向代理决定是否对外。
+
+> 注(2026-09):8317 端口映射与 `/_ext_targets`、`/app/services/external_logs` 两个卷都是为已删除的本地插件留的,现在没有使用方。CPA 面板本身在容器外,容器只按 `cpa_api_url` 出站访问。
 
 #### entrypoint 做什么
 
@@ -6651,7 +6705,9 @@ api/payments.py ──► services/payment_channels/service.py
 
 #### ClawCloud 部署要点(docs/CLAWCLOUD_DEPLOY.md)
 
-用的是完整版 GHCR 镜像。必须挂 `/runtime`(必选)、可选挂 `/_ext_targets` 和 `/app/services/external_logs`;Exposed port `8000`,8889 不建议公网暴露;环境变量照抄 compose 那套;验证用 `GET /api/solver/status` 期望 `{"running": true}`。
+用的是完整版 GHCR 镜像。必须挂 `/runtime`(必选);Exposed port `8000`,8889 不建议公网暴露;环境变量照抄 compose 那套;验证用 `GET /api/solver/status` 期望 `{"running": true}`。
+
+> 注(2026-09):`docs/CLAWCLOUD_DEPLOY.md` 里提到的 `/_ext_targets`、`/app/services/external_logs` 两个可选挂载已随本地插件删除而无使用方,不挂也能正常跑。
 
 #### 安全前置(两套都适用)
 
@@ -6667,7 +6723,7 @@ api/payments.py ──► services/payment_channels/service.py
 | --- | --- |
 | `start_backend.ps1` | 参数 `-EnvName`(默认 `any-auto-register`)、`-BindHost`(默认 `0.0.0.0`)、`-Port`(默认 8000)、`-RestartExisting`(默认真);检查 conda 存在 → 先调 `stop_backend.ps1 -FullStop 0` 清理旧进程 → `conda run -n <env> python -c "import sys; print(sys.executable)"` 解析解释器 → 设 `$env:HOST/$env:PORT` → `& $pythonExe main.py` |
 | `start_backend.bat` | 同逻辑的 cmd 版,env 名取 `%APP_CONDA_ENV%` 回退 `any-auto-register`,`HOST`/`PORT`/`RESTART_EXISTING` 都可用环境变量覆盖 |
-| `stop_backend.ps1` | 参数 `-BackendPort 8000 -SolverPort 8889 -CLIProxyAPIPort 8317 -FullStop 1`;`FullStop=0` 时**不动 8317**(启动前清理不杀插件);用 `Get-NetTCPConnection -State Listen` 找 PID,三级升级停止:`taskkill /PID /T` → `taskkill /T /F` → `Stop-Process -Force`,每级等 6s |
+| `stop_backend.ps1` | 参数 `-BackendPort 8000 -SolverPort 8889 -CLIProxyAPIPort 8317 -FullStop 1`;`FullStop=0` 时**不动 8317**(该端口原用于本地插件,2026-09 起已无使用方);用 `Get-NetTCPConnection -State Listen` 找 PID,三级升级停止:`taskkill /PID /T` → `taskkill /T /F` → `Stop-Process -Force`,每级等 6s |
 | `stop_backend.bat` | 薄封装,转发到 ps1,端口默认值同上 |
 
 两个 start 脚本都**硬依赖 conda**,没有 conda 直接报错退出;`main.py:28-59` 也会在 conda 环境名不等于 `APP_CONDA_ENV` 时打告警(`APP_CONDA_ENV=docker` 时跳过检查)。
@@ -6757,7 +6813,7 @@ api/payments.py ──► services/payment_channels/service.py
 | `CAMOUFOX_RELEASE` | `beta.24` | Camoufox release 后缀 | `Dockerfile:17`,消费于 `scripts/install_camoufox.py:14` |
 | `PYTHONDONTWRITEBYTECODE` / `PYTHONUNBUFFERED` / `PIP_NO_CACHE_DIR` | `1` | 标准 Python 容器优化 | `Dockerfile:19-21`、`Dockerfile.server:29-31` |
 
-compose 层还有几个只用于 bind 路径/端口拼装的变量,Python 侧不读:`APP_RUNTIME_BIND`(默认 `./data`)、`APP_EXT_TARGETS_BIND`(默认 `./_ext_targets`)、`APP_EXTERNAL_LOGS_BIND`(默认 `./external_logs`)、`CLIPROXYAPI_PORT_BIND`(默认 `8317`)、`APP_PORT_BIND`(默认 `127.0.0.1:8000`)。
+compose 层还有几个只用于 bind 路径/端口拼装的变量,Python 侧不读:`APP_RUNTIME_BIND`(默认 `./data`)、`APP_EXT_TARGETS_BIND`(默认 `./_ext_targets`)、`APP_EXTERNAL_LOGS_BIND`(默认 `./external_logs`)、`CLIPROXYAPI_PORT_BIND`(默认 `8317`)、`APP_PORT_BIND`(默认 `127.0.0.1:8000`)。后三个自 2026-09 本地插件删除后已无使用方,属可清理项。
 
 #### 环境变量 → config_store 的隐式回退(重要机制)
 
@@ -6807,15 +6863,15 @@ compose 层还有几个只用于 bind 路径/端口拼装的变量,Python 侧不
 | --- | --- | --- | --- |
 | **Node.js** | **硬依赖(两套镜像都装)** | ChatGPT Sentinel PoW:起 node 子进程跑 OpenAI `sdk.js`;缺失会导致注册收不到验证码且无报错 | `Dockerfile:42`、`Dockerfile.server:46`;路径可用 `OPENAI_SENTINEL_NODE_PATH` 指定 |
 | **Node 20 + npm** | 构建期 | 前端 `npm ci && npm run build`,产物 `/app/static` | `Dockerfile:3-11`、`Dockerfile.server:16-24` |
-| **Go 工具链** | 可选(仅完整版) | CLIProxyAPI 插件用 `go run ./cmd/server` 启动 | `Dockerfile:44`(go1.24.2);本机需 PATH 里有 `go` 或落在 `_find_go` 的三个候选路径 |
-| **git** | 可选(仅完整版) | 插件安装/更新全靠 `git clone/fetch/checkout` | `Dockerfile:68`;`Dockerfile.server` **没装** |
+| **Go 工具链** | **已无用(2026-09 起)** | 原来只有 CLIProxyAPI 插件用 `go run ./cmd/server`;插件删除后 `Dockerfile:44,48` 的 go1.24.2 属可清理的构建开销 |
+| **git** | **已无用(2026-09 起)** | 原来只有插件安装/更新用 `git clone/fetch/checkout`;`Dockerfile:68` 仍装着,可留作手工排查 |
 | **Xvfb + xauth** | 仅完整版 | 无显示环境下跑有头浏览器 | `Dockerfile:43`,entrypoint 用 `xvfb-run` |
 | **GTK/X11/ALSA 库** | 仅完整版 | `libgtk-3-0 libx11-xcb1 libasound2`,浏览器运行库 | `Dockerfile:43` |
 | **uv** | 构建期辅助 | astral uv,装了但主流程仍用 pip | `Dockerfile:45` |
 | **Playwright 浏览器二进制** | 仅完整版 | chromium + firefox,`--with-deps` | `Dockerfile:54` |
 | **Camoufox 二进制** | 仅完整版 | 反指纹 Firefox,由 `scripts/install_camoufox.py` 下载 | `Dockerfile:63` |
 | **conda** | 仅 Windows 本机启动 | `start_backend.ps1/.bat` 用 `conda run` 解析解释器,没有就报错退出 | `start_backend.ps1:12-16` |
-| **PowerShell** | 仅 Windows | 停止脚本 + 插件卸载时的进程清理 | `stop_backend.ps1`、`services/external_apps.py:137` |
+| **PowerShell** | 仅 Windows | 停止脚本(`stop_backend.ps1`) | `stop_backend.ps1`(插件卸载时的进程清理已随本地插件删除) |
 | **Electron 33 + electron-builder 25** | 仅打包桌面版 | 见下一节 | `electron/package.json:14-17` |
 
 
@@ -6847,7 +6903,7 @@ compose 层还有几个只用于 bind 路径/端口拼装的变量,Python 侧不
 - 端口写死 8000,两边都不可配。后端若因 `PORT` 环境变量或占用改了端口,壳就连不上
 - 生产模式给子进程注入 `PORT=8000`,但**不注入** `DATABASE_URL` / `CREDENTIAL_ENCRYPTION_KEY_FILE` / `APP_CONDA_ENV`,所以 PyInstaller 后端会用相对 cwd 的默认值:数据库落在 `resources/backend/backend/account_manager.db`,密钥落在同目录 `.secrets/credential_key`。应用更新覆盖 resources 目录时这两样都可能丢
 - 健康检查打的是 `/api/platforms`。这个路径在有面板密码时会被鉴权中间件拦成 401 —— 但 401 < 500,所以仍算"通"(`electron/main.js:48`),逻辑上没问题
-- `backendProcess.kill()` 只发默认 SIGTERM 给 PyInstaller 主进程,solver 子进程和 CLIProxyAPI 插件进程未必跟着退出;后端自己的 lifespan 关闭钩子会调 `solver_manager.stop()`(`main.py:75-78`),但被强杀时不保证执行
+- `backendProcess.kill()` 只发默认 SIGTERM 给 PyInstaller 主进程,solver 子进程未必跟着退出;后端自己的 lifespan 关闭钩子会调 `solver_manager.stop()`(`main.py:75-78`),但被强杀时不保证执行(2026-09 起本地插件进程已不存在,这条少了一个受影响方)
 
 #### 打包流程
 
@@ -6879,7 +6935,7 @@ compose 层还有几个只用于 bind 路径/端口拼装的变量,Python 侧不
 
 `package.json` 脚本:`dev`(`electron .`)、`build:backend`、`build:mac` / `build:win` / `build:linux` / `build:all`;devDependencies 只有 `electron ^33.0.0` 和 `electron-builder ^25.0.0`(`electron/package.json:6-17`)。
 
-**打包版的能力缺口**:PyInstaller 产物里没有 Playwright/Camoufox 浏览器二进制、没有 Go、没有 git、也没有捆绑 Node。所以桌面版能跑纯协议注册(前提是宿主机 PATH 里有 node),但 Turnstile Solver、有头浏览器执行器和 CLIProxyAPI 插件安装在干净机器上都会失败。
+**打包版的能力缺口**:PyInstaller 产物里没有 Playwright/Camoufox 浏览器二进制、没有 Go、没有 git、也没有捆绑 Node。所以桌面版能跑纯协议注册(前提是宿主机 PATH 里有 node),但 Turnstile Solver 与有头浏览器执行器在干净机器上会失败。(2026-09 起插件页不再需要 Go/git,只剩一次出站 HTTP 探测,所以"插件不可用"这条缺口已消失。)
 
 ### 运维风险清单
 
@@ -6899,6 +6955,17 @@ compose 层还有几个只用于 bind 路径/端口拼装的变量,Python 侧不
 
 #### 4. 插件系统的硬编码与宿主机假设
 
+> ⚠️ 整表**已失效**(2026-09):本地插件(clone + `go run` + 进程启停)已删除,不再依赖宿主机 git / Go,也不再往仓库外写 `_ext_targets`。插件页现在只是一次 HTTP 探测,唯一残留的硬编码是面板管理接口路径(`services/external_apps.py` 的 `MANAGEMENT_PATH` / `AUTH_FILES_PATH`)。
+
+| 风险 | 依据 |
+| --- | --- |
+| 面板管理接口路径硬编码 | `MANAGEMENT_PATH` / `AUTH_FILES_PATH`(`services/external_apps.py:18-19`);CPA 上游改路径就要跟着改代码,没有配置项 |
+| 管理密钥默认值是字面量 | `cliproxyapi_management_key` 缺省 `"cliproxyapi"`(`services/cliproxyapi_sync.py:54`);面板改版后直连的往往就是公网地址,这条比以前**更重要** |
+| 远端凭据被拉回本地(新能力) | `_pull` 会把远端 auth-file 的 AT/RT/id_token 写进本地 `extra`(`services/cpa_account_sync.py:_apply_remote_credentials`);面板若被他人接管,等于往本地灌凭据。已在远端状态为 `access_token_invalidated` / `unauthorized` / `account_deactivated` 时拒绝拉取 |
+
+<details>
+<summary>改版前的风险表(已失效,仅作历史参考)</summary>
+
 | 风险 | 依据 |
 | --- | --- |
 | git 远端硬编码,不可配置 | `services/external_apps.py:31`;上游改名/转移/被墙都要改代码 |
@@ -6911,17 +6978,21 @@ compose 层还有几个只用于 bind 路径/端口拼装的变量,Python 侧不
 | 管理密钥默认值是字面量 | `cliproxyapi_management_key` 缺省 `"cliproxyapi"`(`services/external_apps.py:314`、`services/cliproxyapi_sync.py:42`);未改默认值又把 8317 暴露出去等于管理接口敞开 |
 | 生成配置的缩进硬编码 | `:324` append 时写死两空格缩进,上游 YAML 结构变化会静默产出错误配置 |
 
+</details>
+
 #### 5. 网络调用一律 `verify=False`
 
-`services/cliproxyapi_sync.py:121`、`services/cpa_manager.py:116`、`platforms/chatgpt/cpa_upload.py:234` 全部关掉 TLS 校验,`cliproxyapi_sync` 还主动 `urllib3.disable_warnings`(`:112`)。对本机 127.0.0.1 无所谓,但这些 URL 都是可配置的远端地址,配成公网 HTTPS 时中间人无法被发现。
+`services/cliproxyapi_sync.py:126`、`services/cpa_manager.py:116`、`platforms/chatgpt/cpa_upload.py:234`、`services/external_apps.py:79` 全部关掉 TLS 校验,`cliproxyapi_sync` / `external_apps` 还主动 `urllib3.disable_warnings`。对本机 127.0.0.1 无所谓,但这些 URL 都是可配置的远端地址,配成公网 HTTPS 时中间人无法被发现 —— 插件页改成直连远程面板后,这条的暴露面比改版前更大。
 
 #### 6. 上传路径没有重试,状态同步有
 
-`_retry_sync_call` 只包住 `list_auth_files` 和 `_probe_remote_auth`(`services/cliproxyapi_sync.py:310-312,341,366`),而 `upload_to_cpa` / `upload_to_sub2api` / 贡献上传都是一次性调用。网络抖动时凭证上传直接失败,只能靠"补传远端未发现的 auth-file"批量操作人工重跑。重试也没有指数退避(固定 0.4s × 3,`:16-17`)。
+`_retry_sync_call` 只包住 `list_auth_files` 和 `_probe_remote_auth`(`services/cliproxyapi_sync.py`),而 `upload_to_cpa` / `upload_to_sub2api` / 贡献上传都是一次性调用。网络抖动时凭证上传直接失败,只能靠"补传远端未发现的 auth-file"批量操作人工重跑。重试也没有指数退避(固定 0.4s × 3,`:16-17`)。2026-09 新增的 `services/cpa_account_sync.py` 里 `_push` / `_pull` 同样是单次调用,批量同步只有账号之间的 `BATCH_PROBE_DELAY_SECONDS` 间隔,没有失败重试。
 
 #### 7. 镜像体积与 CI 覆盖
 
 完整版约 5GB(Playwright chromium+firefox + Camoufox + Go + GTK/Xvfb),CI 每次 push 到默认分支都构建并推 GHCR,只有 `linux/amd64`(`.github/workflows/docker-image.yml:56-58`)。`Dockerfile.server` **完全不在 CI 里**,只能本地构建,也就没有任何自动化验证——它坏了要等到有人手动部署时才发现。设了 QEMU 但没用上多架构。
+
+> 注:2026-09 本地插件删除后,**Go 工具链已经没有任何使用方**(`Dockerfile:44,48` 仍会下载 go1.24.2,属可清理的构建开销)。
 
 #### 8. 面板默认无鉴权 + CORS 全开
 
@@ -6930,6 +7001,8 @@ compose 层还有几个只用于 bind 路径/端口拼装的变量,Python 侧不
 #### 9. 日志里的凭证碎片
 
 `services/external_sync.py:90-91,111-112` 的三行 `[DEBUG] print` 会把 extra 的 key 列表和 refresh_token 前 20 字符写进后端 stdout;容器日志/`external_logs` 都会留存。
+
+> 注(2026-09):新加的 `services/cpa_account_sync.py` 在这点上做对了 —— 回给前端的本地侧结构统一走 `_local_report_view()`,只给 `has_access_token` / 时间字段,AT 原文不进响应体(`tests/test_cpa_account_sync.py` 有回归测试守着)。
 
 #### 10. 导出功能是完整凭证的明文出口
 
@@ -7968,22 +8041,22 @@ ChatGPT 专属三个开关（注册方式 / Token 方案 / 绑定 2FA）不入�
 
 | 机制 | 适用范围 | 数据流 |
 | --- | --- | --- |
-| **声明式配置表**(`TAB_ITEMS`,`frontend/src/pages/Settings.tsx:93`) | 7 个 Tab 里的普通配置项 | 一个静态数组描述所有字段 → `ConfigSection`/`ConfigField` 通用渲染 → 一个大 `Form` 统一收集 → 整页 `PUT /api/config` 一次落库 |
+| **声明式配置表**(`TAB_ITEMS`,`frontend/src/pages/Settings.tsx:93`) | 6 个 Tab 里的普通配置项 | 一个静态数组描述所有字段 → `ConfigSection`/`ConfigField` 通用渲染 → 一个大 `Form` 统一收集 → 整页 `PUT /api/config` 一次落库 |
 | **命令式面板**(自定义组件) | `插件`、`安全`、CF Worker 域名池、SMS 自检、Solver 状态 | 组件自持 state,自己 `apiFetch`,**不参与那个大 Form 的保存** |
 
-后者的 4 个组件是:
+后者的 5 个组件是:
 
 | 组件 | 位置 | 职责 |
 | --- | --- | --- |
 | `CFWorkerDomainPoolSection` | `frontend/src/pages/Settings.tsx:607` | CF Worker 多域名池的增删与启停(数组型配置,通用字段渲染表达不了) |
-| `SmsProbePanel` | `frontend/src/pages/Settings.tsx:744` | 「测试余额」「查询国家排名」两个即时探测动作 |
-| `SolverStatus` | `frontend/src/pages/Settings.tsx:805` | 本地 Turnstile Solver 运行状态与重启 |
-| `IntegrationsPanel` | `frontend/src/pages/Settings.tsx:860` | 外部插件安装/更新/启停/卸载 |
-| `SecurityPanel` | `frontend/src/pages/Settings.tsx:1133` | 面板访问密码与后台 2FA |
+| `SmsProbePanel` | `frontend/src/pages/Settings.tsx:725` | 「测试余额」「查询国家排名」两个即时探测动作 |
+| `SolverStatus` | `frontend/src/pages/Settings.tsx:786` | 本地 Turnstile Solver 运行状态与重启 |
+| `IntegrationsPanel` | `frontend/src/pages/Settings.tsx:841` | 远程 CPA 面板连接状态、回填、版本对比与双向同步 |
+| `SecurityPanel` | `frontend/src/pages/Settings.tsx:1228` | 面板访问密码与后台 2FA |
 
-#### 3.2 九个 Tab 与配置分区
+#### 3.2 八个 Tab 与配置分区
 
-`TAB_ITEMS` 共 9 个 Tab(`frontend/src/pages/Settings.tsx:94-430`),其中 2 个是纯自定义面板(`sections: []`):
+`TAB_ITEMS` 共 8 个 Tab(`frontend/src/pages/Settings.tsx:91-407`),其中 2 个是纯自定义面板(`sections: []`):
 
 | Tab key | 标签 | 分区 | 关键配置项 |
 | --- | --- | --- | --- |
@@ -7992,10 +8065,11 @@ ChatGPT 专属三个开关（注册方式 / Token 方案 / 绑定 2FA）不入�
 | `captcha` | 验证码 | 验证码服务 | `default_captcha_solver`、`yescaptcha_key` |
 | `chatgpt` | ChatGPT | CPA 面板 / Sub2API 面板 / CPA 自动维护 | `cpa_*`、`sub2api_*`、`cpa_cleanup_*`(自动维护含阈值、并发、延迟) |
 | `sms` | 手机接码 | 接码平台 / 国家选择 / 租号与重试 | 见下表 |
-| `cliproxyapi` | CLIProxyAPI | 管理面板 | `cliproxyapi_base_url`、`cliproxyapi_management_key` |
 | `icloud` | iCloud | 隐私邮箱默认参数 | `icloud_region`、`icloud_alias_label`、`icloud_alias_note`、`public_base_url`(面板访问地址,留空则用浏览器地址栏的地址;只在服务端拿不到前端 origin 时才用到,见 4.4.1) |
 | `integrations` | 插件 | — (纯 `IntegrationsPanel`) | 不走 Form |
 | `security` | 安全 | — (纯 `SecurityPanel`) | 不走 Form |
+
+> 注(2026-09):`cliproxyapi` 这个设置 Tab 已从界面移除,`cliproxyapi_base_url` / `cliproxyapi_management_key` 仍保留为**兜底键**(CPA 主配置是 `cpa_api_url` / `cpa_api_key`,见 `services/chatgpt_sync.py:_resolve_cliproxy_target`)。插件页现在读的就是 CPA 那两项。
 
 `sms` Tab 的 15 个配置项是全页最密的一块:
 
@@ -8076,20 +8150,18 @@ export function parseBooleanConfigValue(value: unknown): boolean {
 
 | 面板 | 动作 | 接口 |
 | --- | --- | --- |
-| `SmsProbePanel`(`:739`) | 测试余额 / 查询国家排名 | `apiFetch('/sms/${kind}')`(`:755`) |
-| `SolverStatus`(`:800`) | 查状态 / 重启 | `GET /solver/status`(`:805`)、`POST /solver/restart`(`:813`) |
-| `IntegrationsPanel`(`:855`) | 列服务 + 读配置 | `GET /integrations/services` + `GET /config` 并发(`:881-882`) |
-| | 补传远端未发现 | `POST /integrations/backfill`(`:917`) |
-| | 保存安装/更新策略 | `PUT /config`(`:934`,只提交策略字段) |
-| | 全部启动 / 全部停止 | `POST /integrations/services/start-all` / `stop-all`(`:1029`、`:1032`) |
-| | 单个安装/更新 | `POST /integrations/services/{name}/install`(`:1070`、`:1077`) |
-| | 单个启动/停止/卸载 | `.../start`、`.../stop`、`.../uninstall`(`:1085`、`:1091`、`:1104`) |
-| `SecurityPanel`(`:1128`) | 查鉴权状态 | `GET /auth/status`(`:1143`) |
-| | 首次设密码 / 关闭密码 | `POST /auth/setup`(`:1157`)、`POST /auth/disable`(`:1175`) |
-| | 改密码 | `POST /auth/change-password`(`:1193`) |
-| | 后台 2FA 三步 | `GET /auth/2fa/setup`(`:1209`)→ `POST /auth/2fa/enable`(`:1223`)→ `POST /auth/2fa/disable`(`:1241`) |
+| `SmsProbePanel`(`:725`) | 测试余额 / 查询国家排名 | `apiFetch('/sms/${kind}')`(`:741`) |
+| `SolverStatus`(`:786`) | 查状态 / 重启 | `GET /solver/status`(`:791`)、`POST /solver/restart`(`:799`) |
+| `IntegrationsPanel`(`:841`) | 列服务状态 + 打开管理页 + 回填 | `GET /integrations/services`(`:867`)、`POST /integrations/backfill`(`:899`) |
+| | 对比本地/远端版本(只读) | `POST /integrations/sync/report`(`:917`) |
+| | 双向同步(`auto` / `push_only` / `pull_only`) | `POST /integrations/sync/accounts`(`:938`) |
+| | 测试连接 | `POST /integrations/services/{name}/test`(`:1048`) |
+| `SecurityPanel`(`:1228`) | 查鉴权状态 | `GET /auth/status`(`:1243`) |
+| | 首次设密码 / 关闭密码 | `POST /auth/setup`(`:1257`)、`POST /auth/disable`(`:1275`) |
+| | 改密码 | `POST /auth/change-password`(`:1293`) |
+| | 后台 2FA 三步 | `GET /auth/2fa/setup`(`:1309`)→ `POST /auth/2fa/enable`(`:1323`)→ `POST /auth/2fa/disable`(`:1341`) |
 
-`IntegrationsPanel` 的插件更新有两种模式(`updateMode: 'tag' | 'branch'`,`:859`):默认按最新 semver tag,可切成分支 HEAD。结果统一进一个 `resultModal` 弹窗展示(`:867`),由 `formatResultText`(`:496`)把任意后端返回格式化成可读文本。
+> 注(2026-09):`IntegrationsPanel` 已重写(`frontend/src/pages/Settings.tsx:841`)。插件更新模式(`updateMode: 'tag' | 'branch'`)、`PUT /config` 保存策略、以及安装/启停/卸载按钮全部删除,取而代之的是「打开管理页(远程)」「回填账号」「对比同步情况」「同步」四类动作;对比结果直接渲染成表格(本地/远端版本列 + 方向标签),不再走 `resultModal`。
 
 `SecurityPanel` 的 2FA 是**面板自身的登录 2FA**,与 ChatGPT 账号的 TOTP 绑定是两件不相干的事,阅读时容易混。
 

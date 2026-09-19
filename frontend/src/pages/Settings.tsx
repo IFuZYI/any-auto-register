@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { App, Card, Form, Input, Select, Button, message, Tabs, Space, Tag, Typography, Modal, QRCode, Switch } from 'antd'
+import { App, Card, Form, Input, Select, Button, message, Tabs, Space, Tag, Typography, Modal, QRCode, Switch, Table } from 'antd'
 import {
   SaveOutlined,
   EyeOutlined,
@@ -77,10 +77,6 @@ const SELECT_FIELDS: Record<string, { label: string; value: string }[]> = {
   codex_proxy_upload_type: [
     { label: 'AT（Access Token，推荐）', value: 'at' },
     { label: 'RT（Refresh Token）', value: 'rt' },
-  ],
-  external_apps_update_mode: [
-    { label: 'latest semver tag（推荐）', value: 'tag' },
-    { label: '分支 HEAD', value: 'branch' },
   ],
   sms_provider: [
     { label: 'SmsBower', value: 'smsbower' },
@@ -282,7 +278,7 @@ const TAB_ITEMS = [
     sections: [
       {
         title: 'CPA 面板',
-        desc: '注册完成后自动上传到 CPA 管理平台',
+        desc: '远程 CPA 面板。插件页的连接状态、账号同步、回填都读这里的地址与 Key',
         fields: [
           { key: 'cpa_enabled', label: '启用自动上传', type: 'boolean' },
           { key: 'cpa_api_url', label: 'API URL', placeholder: 'https://your-cpa.example.com' },
@@ -371,21 +367,6 @@ const TAB_ITEMS = [
           { key: 'sms_per_phone_timeout', label: '单号等待秒数', placeholder: '80' },
           { key: 'sms_max_phone_attempts', label: '最多换号次数', placeholder: '3' },
           { key: 'sms_code_retries_per_phone', label: '单号内验证重试次数', placeholder: '2' },
-        ],
-      },
-    ],
-  },
-  {
-    key: 'cliproxyapi',
-    label: 'CLIProxyAPI',
-    icon: <ApiOutlined />,
-    sections: [
-      {
-        title: '管理面板',
-        desc: '用于 CLIProxyAPI 管理页登录',
-        fields: [
-          { key: 'cliproxyapi_base_url', label: 'API URL', placeholder: 'http://127.0.0.1:8317' },
-          { key: 'cliproxyapi_management_key', label: '管理口令', secret: true, placeholder: '默认 cliproxyapi' },
         ],
       },
     ],
@@ -861,7 +842,8 @@ function IntegrationsPanel() {
   const [items, setItems] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState('')
-  const [updateMode, setUpdateMode] = useState<'tag' | 'branch'>('tag')
+  const [report, setReport] = useState<any>(null)
+  const [reportLoading, setReportLoading] = useState(false)
   const saved = false
   const [resultModal, setResultModal] = useState({
     open: false,
@@ -882,13 +864,8 @@ function IntegrationsPanel() {
   const load = async () => {
     setLoading(true)
     try {
-      const [d, cfg] = await Promise.all([
-        apiFetch('/integrations/services'),
-        apiFetch('/config'),
-      ])
+      const d = await apiFetch('/integrations/services')
       setItems(d.items || [])
-      const mode = String(cfg?.external_apps_update_mode || 'tag').trim().toLowerCase()
-      setUpdateMode(mode === 'branch' ? 'branch' : 'tag')
     } finally {
       setLoading(false)
     }
@@ -896,16 +873,16 @@ function IntegrationsPanel() {
 
   useEffect(() => {
     load()
-    const timer = window.setInterval(load, 5000)
+    const timer = window.setInterval(load, 15000)
     return () => window.clearInterval(timer)
   }, [])
 
-  const doAction = async (key: string, request: Promise<any>) => {
+  const doAction = async (key: string, request: Promise<any>, successText = '操作完成') => {
     setBusy(key)
     try {
       const result = await request
       await load()
-      message.success('操作完成')
+      message.success(successText)
       showResultModal('操作结果', result, true)
     } catch (e: any) {
       message.error(e?.message || '操作失败')
@@ -925,6 +902,7 @@ function IntegrationsPanel() {
       })
       message.success(`${label} 回填完成：成功 ${d.success} / ${d.total}`)
       showResultModal(`${label} 回填结果`, d, true)
+      await loadReport()
     } catch (e: any) {
       message.error(e?.message || `${label} 回填失败`)
       showResultModal(`${label} 回填结果`, e?.message || e || `${label} 回填失败`, false)
@@ -933,21 +911,66 @@ function IntegrationsPanel() {
     }
   }
 
-  const updateInstallMode = async (nextMode: 'tag' | 'branch') => {
-    setBusy('update-mode')
+  const loadReport = async () => {
+    setReportLoading(true)
     try {
-      await apiFetch('/config', {
-        method: 'PUT',
-        body: JSON.stringify({ data: { external_apps_update_mode: nextMode } }),
+      const d = await apiFetch('/integrations/sync/report', {
+        method: 'POST',
+        body: JSON.stringify({ platforms: ['chatgpt'] }),
       })
-      setUpdateMode(nextMode)
-      message.success(nextMode === 'tag' ? '已切换到 tag 模式' : '已切换到分支模式')
+      setReport(d)
+      if (d.reachable === false) {
+        message.warning(d.message || 'CPA 面板不可达，无法对比')
+      }
     } catch (e: any) {
-      message.error(e?.message || '切换失败')
+      message.error(e?.message || '对比失败')
+    } finally {
+      setReportLoading(false)
+    }
+  }
+
+  const runSync = async (mode: 'auto' | 'push_only' | 'pull_only', scope: 'all' | number) => {
+    const key = `sync-${mode}-${scope}`
+    setBusy(key)
+    try {
+      const body: Record<string, unknown> = { platforms: ['chatgpt'], mode }
+      if (scope !== 'all') body.account_ids = [scope]
+      const d = await apiFetch('/integrations/sync/accounts', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      })
+      const label = scope === 'all' ? '账号同步' : '单账号同步'
+      if (d.unreachable) {
+        message.error(d.message || 'CPA 面板不可达')
+      } else if (!d.failed) {
+        message.success(`${label}完成：推送 ${d.pushed} / 拉取 ${d.pulled} / 跳过 ${d.skipped}`)
+      } else {
+        message.warning(`${label}部分完成：推送 ${d.pushed} / 拉取 ${d.pulled} / 跳过 ${d.skipped} / 失败 ${d.failed}`)
+      }
+      showResultModal(`${label}结果`, d, !d.failed)
+      await loadReport()
+    } catch (e: any) {
+      message.error(e?.message || '同步失败')
+      showResultModal('账号同步结果', e?.message || e || '同步失败', false)
     } finally {
       setBusy('')
     }
   }
+
+  const modeLabel: Record<string, string> = {
+    auto: '同步到最新',
+    push_only: '仅推送本地较新',
+    pull_only: '仅拉取远端较新',
+  }
+
+  const countLabel: Array<[string, string, string]> = [
+    ['in_sync', '一致', 'success'],
+    ['local_newer', '本地较新', 'processing'],
+    ['remote_newer', '远端较新', 'processing'],
+    ['missing_remote', '远端缺失', 'warning'],
+    ['missing_local', '本地缺失', 'warning'],
+    ['unknown', '无法比较', 'default'],
+  ]
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -1011,119 +1034,191 @@ function IntegrationsPanel() {
         </pre>
       </Modal>
 
-      <Card title="安装/更新策略">
-        <Space wrap align="center">
-          <Select
-            style={{ width: 320 }}
-            value={updateMode}
-            options={SELECT_FIELDS.external_apps_update_mode}
-            onChange={(value) => setUpdateMode(value as 'tag' | 'branch')}
-          />
-          <Button
-            type="primary"
-            loading={busy === 'update-mode'}
-            onClick={() => updateInstallMode(updateMode)}
-          >
-            保存策略
-          </Button>
-        </Space>
-      </Card>
-
-      <Card title="批量操作">
-        <Space wrap>
-          <Button loading={busy === 'start-all'} onClick={() => doAction('start-all', apiFetch('/integrations/services/start-all', { method: 'POST' }))}>
-            启动全部（已安装）
-          </Button>
-          <Button loading={busy === 'stop-all'} onClick={() => doAction('stop-all', apiFetch('/integrations/services/stop-all', { method: 'POST' }))}>
-            停止全部
-          </Button>
-          <Button loading={loading} onClick={load}>
-            刷新状态
-          </Button>
-        </Space>
-      </Card>
-
       {items.map((item) => (
-        <Card key={item.name} title={item.label}>
+        <Card
+          key={item.name}
+          title={`${item.label}（远程）`}
+          extra={
+            <Space>
+              <Button loading={loading} onClick={load}>
+                刷新状态
+              </Button>
+              <Button
+                loading={busy === `test-${item.name}`}
+                onClick={() => doAction(`test-${item.name}`, apiFetch(`/integrations/services/${item.name}/test`, { method: 'POST' }), '连接正常')}
+              >
+                测试连接
+              </Button>
+            </Space>
+          }
+        >
           <Space direction="vertical" style={{ width: '100%' }}>
             <div>
               状态：
-              <Tag color={item.running ? 'green' : 'default'} style={{ marginLeft: 8 }}>
-                {item.running ? '运行中' : '未运行'}
+              <Tag color={item.running ? 'success' : item.configured ? 'error' : 'default'} style={{ marginLeft: 8 }}>
+                {item.running ? '已连接' : item.configured ? (item.reachable ? 'Key 无效' : '不可达') : '未配置'}
               </Tag>
-              <Tag color={item.repo_exists ? 'blue' : 'orange'} style={{ marginLeft: 8 }}>
-                {item.repo_exists ? '已安装' : '未安装'}
-              </Tag>
-              {item.pid ? <span style={{ marginLeft: 8 }}>PID: {item.pid}</span> : null}
+              {item.url ? <Tag style={{ marginLeft: 8 }}>远端凭证 {item.auth_file_count} 个</Tag> : null}
             </div>
-            <div>插件目录：<Typography.Text copyable>{item.repo_path}</Typography.Text></div>
-            {item.url ? <div>地址：<Typography.Text copyable>{item.url}</Typography.Text></div> : null}
-            {item.management_url ? <div>管理页：<Typography.Text copyable>{item.management_url}</Typography.Text></div> : null}
-            {item.management_key ? <div>登录口令：<Typography.Text copyable>{item.management_key}</Typography.Text></div> : null}
-            <div>日志：<Typography.Text copyable>{item.log_path}</Typography.Text></div>
-            {item.last_error ? <div style={{ color: 'var(--danger)' }}>最近错误：{item.last_error}</div> : null}
+            {item.url ? (
+              <div>
+                面板地址：<Typography.Text copyable>{item.url}</Typography.Text>
+              </div>
+            ) : (
+              <div style={{ color: 'var(--danger)' }}>
+                未配置 CPA 面板地址，请到「设置 → ChatGPT → CPA 面板」填写 API URL 与 API Key。
+              </div>
+            )}
+            {item.management_url ? (
+              <div>
+                管理页：<Typography.Text copyable>{item.management_url}</Typography.Text>
+              </div>
+            ) : null}
+            {item.management_key ? (
+              <div>
+                API Key：<Typography.Text copyable>{item.management_key}</Typography.Text>
+              </div>
+            ) : null}
+            {item.message && !item.running ? <div style={{ color: 'var(--danger)' }}>连接信息：{item.message}</div> : null}
             <Space wrap>
               {item.management_url ? (
-                <Button onClick={() => window.open(item.management_url, '_blank')}>
-                  打开管理页
-                </Button>
+                <Button onClick={() => window.open(item.management_url, '_blank')}>打开管理页（远程）</Button>
               ) : null}
-              {!item.repo_exists ? (
-                <Button
-                  type="primary"
-                  loading={busy === `install-${item.name}`}
-                  onClick={() => doAction(`install-${item.name}`, apiFetch(`/integrations/services/${item.name}/install`, { method: 'POST' }))}
-                >
-                  安装最新版
-                </Button>
-              ) : (
-                <Button
-                  loading={busy === `install-${item.name}`}
-                  onClick={() => doAction(`install-${item.name}`, apiFetch(`/integrations/services/${item.name}/install`, { method: 'POST' }))}
-                >
-                  更新到最新版
-                </Button>
-              )}
               <Button
-                loading={busy === `start-${item.name}`}
-                disabled={!item.repo_exists}
-                onClick={() => doAction(`start-${item.name}`, apiFetch(`/integrations/services/${item.name}/start`, { method: 'POST' }))}
+                loading={busy === 'backfill-chatgpt'}
+                onClick={() => backfill(['chatgpt'], 'ChatGPT', 'backfill-chatgpt')}
               >
-                启动
+                回填现有 ChatGPT 账号
               </Button>
-              <Button
-                loading={busy === `stop-${item.name}`}
-                onClick={() => doAction(`stop-${item.name}`, apiFetch(`/integrations/services/${item.name}/stop`, { method: 'POST' }))}
-              >
-                停止
-              </Button>
-              <Button
-                danger
-                loading={busy === `uninstall-${item.name}`}
-                disabled={!item.repo_exists}
-                onClick={() => {
-                  const ok = window.confirm(`确认卸载 ${item.label}？\n会停止服务并删除本地插件目录。`)
-                  if (!ok) return
-                  doAction(
-                    `uninstall-${item.name}`,
-                    apiFetch(`/integrations/services/${item.name}/uninstall`, { method: 'POST' }),
-                  )
-                }}
-              >
-                卸载
-              </Button>
-              {item.name === 'cliproxyapi' ? (
-                <Button
-                  loading={busy === 'backfill-chatgpt'}
-                  onClick={() => backfill(['chatgpt'], 'ChatGPT', 'backfill-chatgpt')}
-                >
-                  回填现有 ChatGPT 账号
-                </Button>
-              ) : null}
             </Space>
           </Space>
         </Card>
       ))}
+
+      <Card
+        title="账号同步（本地 ↔ CPA）"
+        extra={
+          <Button loading={reportLoading} onClick={loadReport}>
+            {report ? '刷新对比' : '开始对比'}
+          </Button>
+        }
+      >
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Space wrap>
+            {(['auto', 'push_only', 'pull_only'] as const).map((mode) => (
+              <Button
+                key={mode}
+                type={mode === 'auto' ? 'primary' : 'default'}
+                loading={busy === `sync-${mode}-all`}
+                disabled={!report || report.reachable === false}
+                onClick={() => runSync(mode, 'all')}
+              >
+                {modeLabel[mode]}
+              </Button>
+            ))}
+          </Space>
+          {report ? (
+            <>
+              {report.reachable === false ? (
+                <div style={{ color: 'var(--danger)' }}>CPA 面板不可达：{report.message}</div>
+              ) : (
+                <Space wrap>
+                  <span>共 {report.total} 个账号：</span>
+                  {countLabel.map(([key, label, color]) => (
+                    <Tag key={key} color={report.counts?.[key] ? color : 'default'}>
+                      {label} {report.counts?.[key] || 0}
+                    </Tag>
+                  ))}
+                  {typeof report.remote_auth_file_count === 'number' ? (
+                    <Tag>远端 auth-file {report.remote_auth_file_count} 个</Tag>
+                  ) : null}
+                </Space>
+              )}
+              <Table
+                size="small"
+                rowKey={(row: any) => String(row.id ?? row.email)}
+                dataSource={report.items || []}
+                pagination={{ pageSize: 20, showSizeChanger: false }}
+                scroll={{ x: 900 }}
+                columns={[
+                  { title: '邮箱', dataIndex: 'email', key: 'email', width: 240, ellipsis: true },
+                  {
+                    title: '本地 AT 过期',
+                    key: 'local_at',
+                    width: 170,
+                    render: (_: any, row: any) => formatSyncTime(row.local?.at_expires_at) || '-',
+                  },
+                  {
+                    title: '远端 AT 过期',
+                    key: 'remote_at',
+                    width: 170,
+                    render: (_: any, row: any) => formatSyncTime(row.remote?.at_expires_at) || '-',
+                  },
+                  {
+                    title: '本地刷新',
+                    key: 'local_refresh',
+                    width: 170,
+                    render: (_: any, row: any) => formatSyncTime(row.local?.last_refresh) || '-',
+                  },
+                  {
+                    title: '远端刷新',
+                    key: 'remote_refresh',
+                    width: 170,
+                    render: (_: any, row: any) => formatSyncTime(row.remote?.last_refresh) || '-',
+                  },
+                  {
+                    title: '判定',
+                    key: 'direction',
+                    width: 120,
+                    render: (_: any, row: any) => {
+                      const color =
+                        row.direction === 'in_sync'
+                          ? 'success'
+                          : row.direction === 'local_newer' || row.direction === 'remote_newer'
+                            ? 'processing'
+                            : row.direction === 'unreachable'
+                              ? 'error'
+                              : row.direction === 'unknown'
+                                ? 'default'
+                                : 'warning'
+                      return (
+                        <Tag color={color} title={row.detail || ''}>
+                          {row.direction_label || row.direction}
+                        </Tag>
+                      )
+                    },
+                  },
+                  {
+                    title: '说明',
+                    dataIndex: 'detail',
+                    key: 'detail',
+                    ellipsis: true,
+                  },
+                  {
+                    title: '操作',
+                    key: 'action',
+                    width: 90,
+                    render: (_: any, row: any) => (
+                      <Button
+                        size="small"
+                        type="link"
+                        loading={busy === `sync-auto-${row.id}`}
+                        onClick={() => runSync('auto', row.id)}
+                      >
+                        同步
+                      </Button>
+                    ),
+                  },
+                ]}
+              />
+            </>
+          ) : (
+            <Typography.Text type="secondary">
+              点「开始对比」拉一次远端 auth-file 清单，逐号比较 AT 过期时间（缺则比刷新时间），不会改动任何数据。
+            </Typography.Text>
+          )}
+        </Space>
+      </Card>
     </div>
   )
 }

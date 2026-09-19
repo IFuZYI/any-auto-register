@@ -182,15 +182,46 @@ Country ID, per-number timeout, and max number swaps can additionally be overrid
 
 ### 6. ChatGPT Batch Status Sync & Re-upload
 
-At the top of the ChatGPT platform list, there are two types of batch capabilities:
+At the top of the ChatGPT platform list, there are three types of batch capabilities:
 
 - **Status Sync**
   - Sync selected accounts' local status
-  - Sync selected accounts' CLIProxyAPI status
+  - Sync selected accounts' CPA status
   - Or batch execute on current filter results
 - **Re-upload accounts not found on remote**
   - Re-upload auth-files not found on the remote
   - Supports "current filter scope" or "currently selected accounts"
+
+Account-level version comparison and two-way sync live on the **Settings → Plugins** page — see [§6.2](#62-account-sync-newest-side-wins); the plugins page itself is documented in [§6.1](#61-plugins-page-remote-cpa-panel).
+
+### 6.1 Plugins Page: Remote CPA Panel
+
+The CPA panel under **Settings → Plugins** no longer installs CLIProxyAPI locally — it connects directly to your existing remote CPA panel:
+
+- The address and API key are read from **Settings → ChatGPT → CPA Panel** (`cpa_api_url` / `cpa_api_key`); no separate config to maintain
+- **Open Management Page (remote)** opens `{API URL}/management.html` in a new tab
+- **Test Connection** probes `GET /v0/management/auth-files` on the spot, distinguishing "connected / invalid key / unreachable / not configured" and counting remote codex credentials
+- **Backfill Existing ChatGPT Accounts** uploads local accounts missing on the remote (same behaviour as before)
+
+### 6.2 Account Sync: Newest Side Wins
+
+Below that is **Account Sync (local ↔ CPA)**:
+
+1. **Compare** fetches the remote auth-file list once — read-only, changes nothing
+2. Each account is compared by: **AT expiry** (decoded from the JWT `exp`), falling back to **refresh time** (local `chatgpt_token_refresh.at` vs remote `last_refresh`) when the expiries are equal or missing; a 60-second difference counts as in-sync
+3. The table shows local AT expiry, remote AT expiry, local refresh, remote refresh, verdict and detail, plus a summary of in-sync / local-newer / remote-newer / missing sides / unknown
+
+| Verdict | Action in `auto` mode |
+| --- | --- |
+| Remote missing / local newer | Push to CPA (local status must probe `access_token_valid` first; re-verified after upload) |
+| Local missing / remote newer | Pull to local (overwrites AT/RT/id_token; empty values never overwrite) |
+| In sync / unknown | Skip |
+
+Three buttons: **Sync to newest** (default, both directions), **Push local-newer only**, **Pull remote-newer only**; every row also has its own **Sync** button.
+
+Two safety rules: pulling is refused when the remote state is `access_token_invalidated` / `unauthorized` / `account_deactivated` (no point importing dead credentials), and when the remote entry carries no `access_token` the sync reports "cannot pull" instead of guessing a download endpoint (export it from the CPA panel and import manually).
+
+The account detail drawer's **CLIProxyAPI Status** section also shows the compared AT expiries and verdict.
 
 ### 7. Multi-format Batch Export
 
@@ -478,8 +509,8 @@ CAMOUFOX_VERSION=135.0.1 CAMOUFOX_RELEASE=beta.24 docker compose build app
 ### Docker Usage Notes
 
 - The current Docker image primarily covers the main application and local Turnstile Solver
-- Auto-install/launch logic for `CLIProxyAPI` still favors the host machine environment
-- If you depend on `conda`, Go, or Windows executables, it is not recommended to run these directly in the current Linux container
+- The CPA panel is an **external service** you deploy yourself; the container only reaches it via `cpa_api_url`
+- If you depend on `conda` or Windows executables, it is not recommended to run these directly in the current Linux container
 - If you only need Web UI, account management, task scheduling, and local Solver, the current Compose configuration works out of the box
 
 ## Plugins & External Dependencies
@@ -490,22 +521,17 @@ The project supports self-hosting temporary email via Cloudflare Worker, sourced
 
 - <https://github.com/dreamhunter2333/cloudflare_temp_email>
 
-### External Plugin Git URLs
+### External Plugin: CPA Panel
 
-The project currently supports on-demand installation/launch of the following external components:
+The plugins page no longer clones, builds or launches CLIProxyAPI on the local machine — it connects directly to your existing remote CPA panel (see [§6.1](#61-plugins-page-remote-cpa-panel)):
 
-| Project | Purpose | Git URL |
+| Project | Purpose | Upstream repo |
 | --- | --- | --- |
-| CLIProxyAPI | CPA / Proxy pool management service | `https://github.com/router-for-me/CLIProxyAPI.git` |
+| CLIProxyAPI | CPA / Proxy pool management service | <https://github.com/router-for-me/CLIProxyAPI> |
 
-The **"Install Latest / Update to Latest"** button in the plugin page syncs the latest code from the repo, and now supports **uninstallation** (stops the service first, then deletes the local plugin directory).
-By default, it updates to the **latest semver tag**; you can also switch back to **branch HEAD** mode in "Settings → Plugins → Install/Update Strategy".
+You deploy and upgrade the panel yourself; this project only reads and writes its auth-files over the management API. Address and key are reused from **Settings → ChatGPT → CPA Panel** (`cpa_api_url` / `cpa_api_key`), no separate config needed.
 
-If you need to change to `ghproxy`, `gitclone`, enterprise Git mirrors, or other proxy addresses, you'll need to also modify:
-
-```text
-services/external_apps.py
-```
+The only remaining code change you might need is when the panel's management API paths move (currently `/management.html` and `/v0/management/auth-files`, both in `services/external_apps.py`).
 
 ## Common Troubleshooting
 
