@@ -3393,16 +3393,18 @@ flowchart TD
 
 | 入口 | 位置 | 目的 | 请求 | UA |
 |---|---|---|---|---|
-| `probe_local_chatgpt_status(account, proxy)` | `platforms/chatgpt/status_probe.py:388` | 判"凭证还能不能用 / 套餐是什么 / Codex 能不能跑" | `GET /backend-api/me` → 通过后再 `GET /backend-api/wham/usage` | `CODEX_USER_AGENT` |
-| `probe_plus_trial_status(account, proxy)` | `platforms/chatgpt/status_probe.py:345` | 判"这个号还能不能白嫖首月 Plus" | `GET /backend-api/accounts/check/v4-2023-04-27` | `BROWSER_USER_AGENT` |
+| `probe_local_chatgpt_status(account, proxy)` | `platforms/chatgpt/status_probe.py:449` | 判"凭证还能不能用 / 套餐是什么 / Codex 能不能跑" | `GET /backend-api/me` → 通过后再 `GET /backend-api/wham/usage` | `CODEX_USER_AGENT` |
+| `probe_plus_trial_status(account, proxy)` | `platforms/chatgpt/status_probe.py:406` | 判"这个号还能不能白嫖首月 Plus" | `GET /backend-api/accounts/check/v4-2023-04-27` | `BROWSER_USER_AGENT` |
 
-三个 URL 常量集中在 `platforms/chatgpt/status_probe.py:18-21`:
+三个 URL 常量集中在 `platforms/chatgpt/status_probe.py:57-59`:
 
 - `CODEX_USAGE_URL = https://chatgpt.com/backend-api/wham/usage`
 - `CHATGPT_ME_URL = https://chatgpt.com/backend-api/me`
 - `CHATGPT_ACCOUNTS_CHECK_URL = https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27`
 
-所有请求统一走 `_perform_get()`(`platforms/chatgpt/status_probe.py:174`),用 `curl_cffi` + `impersonate="chrome110"`,超时 20s,代理由 `_build_proxies()` 拼成 `{"http":…, "https":…}`。
+所有请求统一走 `_perform_get()`(`platforms/chatgpt/status_probe.py:213`),用 `curl_cffi` + `impersonate="chrome110"`,单次超时 15s(`_PROBE_TIMEOUT`),代理由 `_build_proxies()` 拼成 `{"http":…, "https":…}`。
+
+**瞬时网络错带重试(`platforms/chatgpt/status_probe.py:28-55,213-241`)**:只对"还没开始收包"的瞬时网络错——curl 28 超时 / 7 连不上 / 代理 / DNS(`_TRANSIENT_NETWORK_ERRORS = (Timeout, CurlConnectionError, ProxyError, DNSError)`)——重试。这几个 GET 都是幂等只读,重试安全;真正的 HTTP 应答(401/403/429…)走正常 return,**不在重试之列**。参数:`_PROBE_MAX_ATTEMPTS = 2`、退避 `_PROBE_RETRY_BACKOFF * attempt`(第 1 次失败后 sleep 1.5s)。重试用尽后抛 `ProbeNetworkError`,`_friendly_network_reason()` 把它翻成干净中文(如"连接上游超时(已重试 2 次仍失败)"),**避免把 `Failed to perform, curl: (28) ... See https://...` 原文甩进批量结果**。上层各调用点(`probe_plus_trial_status` 自带 except、`cpa_account_sync._push`/`sync_chatgpt_accounts_with_cpa`、`api/integrations.py` 回填端点)均按账号 catch,单号网络失败不拖垮整批。
 
 ##### 1.2 `CODEX_USER_AGENT` 的作用与 UA 分裂的原因
 
@@ -3411,7 +3413,7 @@ CODEX_USER_AGENT = "codex_cli_rs/0.116.0 (Mac OS 26.0.1; arm64) Apple_Terminal/4
 ```
 
 - `/backend-api/me` 与 `/backend-api/wham/usage` 是 **Codex CLI 自己调的接口**,所以带 Codex CLI 的 UA 才是"正常客户端"。`wham/usage` 更是 Codex 专属额度接口,用浏览器 UA 去打反而可疑。
-- `accounts/check` 相反,是**网页端自己调的接口**,用 Codex UA 去打属于明显的非浏览器特征(`platforms/chatgpt/status_probe.py:22` 原注释),因此换成 `BROWSER_USER_AGENT`(Chrome/145 on Win64),并补 `Origin` / `Referer` / `OAI-Device-Id`。
+- `accounts/check` 相反,是**网页端自己调的接口**,用 Codex UA 去打属于明显的非浏览器特征(`platforms/chatgpt/status_probe.py:61` 原注释),因此换成 `BROWSER_USER_AGENT`(Chrome/145 on Win64),并补 `Origin` / `Referer` / `OAI-Device-Id`。
 
 ##### 1.3 请求头与账号标识的来源
 
@@ -4277,11 +4279,11 @@ SQLite 表 `cards`(默认落在 `platforms/chatgpt/payment_channels/cards.db`,�
 
 | 依赖 | 风险 | 涉及位置 |
 |---|---|---|
-| `/backend-api/me`、`/backend-api/wham/usage`、`/backend-api/accounts/check/v4-2023-04-27` 均为**未公开接口**,后者连版本日期都写在 URL 里 | 改路径 / 改版本即全盘失效 | `platforms/chatgpt/status_probe.py:18-20` |
+| `/backend-api/me`、`/backend-api/wham/usage`、`/backend-api/accounts/check/v4-2023-04-27` 均为**未公开接口**,后者连版本日期都写在 URL 里 | 改路径 / 改版本即全盘失效 | `platforms/chatgpt/status_probe.py:57-59` |
 | 判定逻辑**硬绑响应字段名**:`plan_type` / `orgs.data[*].settings.workspace_plan_type` / `accounts.default.entitlement.has_active_subscription` / `eligible_promo_campaigns.plus.id` / `account.is_deactivated` | 字段改名或层级调整会让状态**静默退化**为 `unknown` / `free` —— 不是报错,是错的结论 | `platforms/chatgpt/status_probe.py:311-341`、`:456-481` |
 | 促销 id `plus-1-month-free` / `team-1-month-free` 三处字面量 | 活动更名 → 探测误报"不能领"、提链丢失免费首月 | `platforms/chatgpt/status_probe.py:30`、`platforms/chatgpt/payment.py:125` / `:179`、`platforms/chatgpt/payment_channels/direct/channel.py:187` |
 | 封号识别靠**英文措辞子串匹配**(`deactivated` / `suspended` / `banned` / `violat` / `potential abuse` / `terminated`) | 文案改写或本地化即漏判;`violat` 这类宽泛词也可能把正常错误误判成封号 | `services/chatgpt_account_state.py:31-41` |
-| UA 与指纹写死具体版本(`codex_cli_rs/0.116.0`、`Chrome/145`、`Chrome/146`、`impersonate="chrome110/120/146"`) | 版本停留过久本身成为识别特征 | `platforms/chatgpt/status_probe.py:21-26`、`platforms/chatgpt/payment_channels/direct/transport.py:20-29`、多处 `impersonate` |
+| UA 与指纹写死具体版本(`codex_cli_rs/0.116.0`、`Chrome/145`、`Chrome/146`、`impersonate="chrome110/120/146"`) | 版本停留过久本身成为识别特征 | `platforms/chatgpt/status_probe.py:60-65`、`platforms/chatgpt/payment_channels/direct/transport.py:20-29`、多处 `impersonate` |
 | `refresh_token` 走 `auth.openai.com/oauth/token` 且 `client_id` 固定 | 该 client 被吊销则全库账号都刷不动 | `platforms/chatgpt/token_refresh.py:47-59` |
 | Codex `wham/usage` 需要 `Chatgpt-Account-Id`,而该值靠**自行解 JWT**(不验签)取得 | claim 布局变化 → 探测降级为 `probe_failed` | `platforms/chatgpt/status_probe.py:81-103` |
 
@@ -6045,7 +6047,7 @@ iCloud 不是传统"注册"。这里的"注册"**= 从已登录主号生成一�
 | 假设 | 位置 | 在什么环境下不成立 |
 | --- | --- | --- |
 | 宿主机装了 `git` 且在 PATH | `_run_git`,`services/external_apps.py:66-76` | `Dockerfile.server` 没装 git(仅完整版 `Dockerfile:68` 装了),无头镜像里插件安装必然失败 |
-| 宿主机装了 Go 工具链 | `_find_go`,`services/external_apps.py:305-307` | 完整版 `Dockerfile:44` 装了 go1.24.2;`Dockerfile.server` 没有 |
+| 宿主机装了 Go 工具链 | `_find_go`,`services/external_apps.py:305-307` | 2026-09 起两套镜像均不装 Go(原完整版 `Dockerfile` 的 go1.24.2 已移除);此假设仅对手工装了 Go 的宿主成立 |
 | `go run` 每次启动都现场编译 | `services/external_apps.py:337` | 首次启动很慢,90s 超时可能不够;还要求 Go module 代理可达 |
 | `netstat -ano -p tcp` 存在 | `services/external_apps.py:252-256` | 这是 Windows 语法;Linux 的 net-tools netstat 不认 `-ano`,`_find_pid_by_port` 直接返回 None(异常被吞),Linux 上端口 PID 永远查不到 |
 | `creationflags=CREATE_NO_WINDOW` | `_creationflags`,`services/external_apps.py:62-63` | 非 Windows 用 `getattr(..., 0)` 兜底为 0,安全 |
@@ -6640,14 +6642,13 @@ api/payments.py ──► services/payment_channels/service.py
 | 镜像体积 | 约 5 GB | 约 1.1~1.2 GB(`Dockerfile.server:6`、`docs/SERVER_DEPLOY.md:14`) |
 | 前端构建 | `node:20-bookworm-slim` 多阶段 `npm ci && npm run build`(`Dockerfile:3-11`) | 同样(`Dockerfile.server:16-24`) |
 | 运行时基础镜像 | `python:3.12-slim`(`Dockerfile:14`) | `python:3.12-slim`(`Dockerfile.server:27`) |
-| apt 包 | `curl ca-certificates nodejs libgtk-3-0 libx11-xcb1 libasound2 xvfb xauth`,之后再补 `dos2unix git iproute2 procps`(`Dockerfile:41-46,68`) | 只 `ca-certificates curl nodejs`,构建期临时装 `dos2unix` 并在同层 purge(`Dockerfile.server:45-49,54-59`) |
-| Go 工具链 | 装 go1.24.2 到 `/usr/local/go`,加进 PATH(`Dockerfile:44,48`) | **不装** |
-| uv | 装 astral uv(`Dockerfile:45`) | 不装 |
-| 浏览器 | `playwright install --with-deps chromium firefox`,带 3 次重试;再跑 `scripts/install_camoufox.py` 装 Camoufox(`Dockerfile:50-63`) | **不装任何浏览器** |
+| apt 包 | `curl ca-certificates nodejs libgtk-3-0 libx11-xcb1 libasound2 xvfb xauth`,之后再补 `dos2unix git iproute2 procps`(`Dockerfile:41-44,64`) | 只 `ca-certificates curl nodejs`,构建期临时装 `dos2unix` 并在同层 purge(`Dockerfile.server:45-49,54-59`) |
+| Go 工具链 / uv | **两套镜像都不装**(2026-09 本地插件删除后 Go 已无使用方,连同 uv 一并从 `Dockerfile` 移除) | 不装 |
+| 浏览器 | `playwright install --with-deps chromium firefox`,带 3 次重试;再跑 `scripts/install_camoufox.py` 装 Camoufox(`Dockerfile:46-59`) | **不装任何浏览器** |
 | Camoufox 版本参数 | build args `CAMOUFOX_VERSION=135.0.1` / `CAMOUFOX_RELEASE=beta.24`(`Dockerfile:16-17`,compose 里可覆盖) | 无 |
 | Turnstile Solver | 开启,`APP_ENABLE_SOLVER=1` | 关闭,`APP_ENABLE_SOLVER=0`(`Dockerfile.server:37`) |
-| EXPOSE | `8000 8889`(`Dockerfile:74`) | `8000`(`Dockerfile.server:61`) |
-| VOLUME | `/runtime`, `/_ext_targets`(`Dockerfile:76`;后者自 2026-09 起无使用方) | `/runtime`(`Dockerfile.server:63`) |
+| EXPOSE | `8000 8889`(`Dockerfile:70`) | `8000`(`Dockerfile.server:61`) |
+| VOLUME | `/runtime`, `/_ext_targets`(`Dockerfile:72`;后者自 2026-09 起无使用方) | `/runtime`(`Dockerfile.server:63`) |
 | entrypoint 命令 | `xvfb-run -a --server-args="-screen 0 1920x1080x24" python main.py`(`docker/entrypoint.sh:22`) | `python main.py`(`docker/entrypoint.server.sh:26`) |
 | 适用场景 | 需要有头/无头浏览器、Turnstile Solver 的桌面或大机器 | 只跑 Web UI + ChatGPT/iCloud 纯协议注册的小 VPS(2 核 2G 也能一两分钟构建完) |
 
@@ -6863,13 +6864,13 @@ compose 层还有几个只用于 bind 路径/端口拼装的变量,Python 侧不
 | --- | --- | --- | --- |
 | **Node.js** | **硬依赖(两套镜像都装)** | ChatGPT Sentinel PoW:起 node 子进程跑 OpenAI `sdk.js`;缺失会导致注册收不到验证码且无报错 | `Dockerfile:42`、`Dockerfile.server:46`;路径可用 `OPENAI_SENTINEL_NODE_PATH` 指定 |
 | **Node 20 + npm** | 构建期 | 前端 `npm ci && npm run build`,产物 `/app/static` | `Dockerfile:3-11`、`Dockerfile.server:16-24` |
-| **Go 工具链** | **已无用(2026-09 起)** | 原来只有 CLIProxyAPI 插件用 `go run ./cmd/server`;插件删除后 `Dockerfile:44,48` 的 go1.24.2 属可清理的构建开销 |
-| **git** | **已无用(2026-09 起)** | 原来只有插件安装/更新用 `git clone/fetch/checkout`;`Dockerfile:68` 仍装着,可留作手工排查 |
+| **Go 工具链** | **已移除(2026-09)** | 原来只有 CLIProxyAPI 插件用 `go run ./cmd/server`;插件删除后已无使用方 | 已从 `Dockerfile` 清理(连同 uv) |
+| **git** | **已无用(2026-09 起)** | 原来只有插件安装/更新用 `git clone/fetch/checkout` | `Dockerfile:64` 仍装着,可留作手工排查 |
 | **Xvfb + xauth** | 仅完整版 | 无显示环境下跑有头浏览器 | `Dockerfile:43`,entrypoint 用 `xvfb-run` |
 | **GTK/X11/ALSA 库** | 仅完整版 | `libgtk-3-0 libx11-xcb1 libasound2`,浏览器运行库 | `Dockerfile:43` |
-| **uv** | 构建期辅助 | astral uv,装了但主流程仍用 pip | `Dockerfile:45` |
-| **Playwright 浏览器二进制** | 仅完整版 | chromium + firefox,`--with-deps` | `Dockerfile:54` |
-| **Camoufox 二进制** | 仅完整版 | 反指纹 Firefox,由 `scripts/install_camoufox.py` 下载 | `Dockerfile:63` |
+| **uv** | **已移除(2026-09)** | 原先装了 astral uv 但主流程始终用 pip,无使用方 | 已从 `Dockerfile` 清理 |
+| **Playwright 浏览器二进制** | 仅完整版 | chromium + firefox,`--with-deps` | `Dockerfile:50` |
+| **Camoufox 二进制** | 仅完整版 | 反指纹 Firefox,由 `scripts/install_camoufox.py` 下载 | `Dockerfile:59` |
 | **conda** | 仅 Windows 本机启动 | `start_backend.ps1/.bat` 用 `conda run` 解析解释器,没有就报错退出 | `start_backend.ps1:12-16` |
 | **PowerShell** | 仅 Windows | 停止脚本(`stop_backend.ps1`) | `stop_backend.ps1`(插件卸载时的进程清理已随本地插件删除) |
 | **Electron 33 + electron-builder 25** | 仅打包桌面版 | 见下一节 | `electron/package.json:14-17` |
@@ -6986,13 +6987,13 @@ compose 层还有几个只用于 bind 路径/端口拼装的变量,Python 侧不
 
 #### 6. 上传路径没有重试,状态同步有
 
-`_retry_sync_call` 只包住 `list_auth_files` 和 `_probe_remote_auth`(`services/cliproxyapi_sync.py`),而 `upload_to_cpa` / `upload_to_sub2api` / 贡献上传都是一次性调用。网络抖动时凭证上传直接失败,只能靠"补传远端未发现的 auth-file"批量操作人工重跑。重试也没有指数退避(固定 0.4s × 3,`:16-17`)。2026-09 新增的 `services/cpa_account_sync.py` 里 `_push` / `_pull` 同样是单次调用,批量同步只有账号之间的 `BATCH_PROBE_DELAY_SECONDS` 间隔,没有失败重试。
+`_retry_sync_call` 只包住 `list_auth_files` 和 `_probe_remote_auth`(`services/cliproxyapi_sync.py`),而 `upload_to_cpa` / `upload_to_sub2api` / 贡献上传都是一次性调用。网络抖动时凭证上传直接失败,只能靠"补传远端未发现的 auth-file"批量操作人工重跑。重试也没有指数退避(固定 0.4s × 3,`:16-17`)。2026-09 新增的 `services/cpa_account_sync.py` 里 `_push` / `_pull` 的**上传/拉取动作本身**仍是单次调用,批量同步只有账号之间的 `BATCH_PROBE_DELAY_SECONDS` 间隔,上传不失败重试。唯一的例外是 `_push` 里先跑的本地探测(`probe_local_chatgpt_status` → `_perform_get`):它对瞬时网络错(超时 / 连不上 / 代理 / DNS)带 2 次重试(`_PROBE_MAX_ATTEMPTS`,见 §状态探测),重试用尽抛 `ProbeNetworkError`,由 `_push` 外层按账号 catch —— 也就是"探测环节"有瞬时重试,"上传环节"没有。
 
 #### 7. 镜像体积与 CI 覆盖
 
-完整版约 5GB(Playwright chromium+firefox + Camoufox + Go + GTK/Xvfb),CI 每次 push 到默认分支都构建并推 GHCR,只有 `linux/amd64`(`.github/workflows/docker-image.yml:56-58`)。`Dockerfile.server` **完全不在 CI 里**,只能本地构建,也就没有任何自动化验证——它坏了要等到有人手动部署时才发现。设了 QEMU 但没用上多架构。
+完整版约 5GB(Playwright chromium+firefox + Camoufox + GTK/Xvfb),CI 每次 push 到默认分支都构建并推 GHCR,只有 `linux/amd64`(`.github/workflows/docker-image.yml:56-58`)。`Dockerfile.server` **完全不在 CI 里**,只能本地构建,也就没有任何自动化验证——它坏了要等到有人手动部署时才发现。设了 QEMU 但没用上多架构。
 
-> 注:2026-09 本地插件删除后,**Go 工具链已经没有任何使用方**(`Dockerfile:44,48` 仍会下载 go1.24.2,属可清理的构建开销)。
+> 注:2026-09 本地插件删除后,**Go 工具链与 uv 已无使用方并从 `Dockerfile` 移除**(原 go1.24.2 下载 + astral uv 安装,均属可清理的构建开销,现已清理)。
 
 #### 8. 面板默认无鉴权 + CORS 全开
 
