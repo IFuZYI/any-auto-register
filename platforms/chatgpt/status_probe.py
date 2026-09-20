@@ -4,16 +4,55 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from curl_cffi import requests as cffi_requests
+from curl_cffi.requests.exceptions import (
+    ConnectionError as CurlConnectionError,
+    DNSError,
+    ProxyError,
+    Timeout,
+)
 from services.chatgpt_account_state import (
     is_account_deactivated_message,
     looks_like_banned_response,
 )
+
+logger = logging.getLogger(__name__)
+
+# 单次外呼超时。chatgpt.com 正常 1~2s 就回，15s 已经很宽；给瞬时抖动留重试余量。
+_PROBE_TIMEOUT = 15
+# 只对"没开始收包"的瞬时网络错（curl 28 超时 / 7 连不上 / 代理 / DNS）重试。
+# 这些 GET 都是幂等只读，重试安全；真正的 HTTP 应答（401/403/429…）不在此列。
+_PROBE_MAX_ATTEMPTS = 2
+_PROBE_RETRY_BACKOFF = 1.5
+_TRANSIENT_NETWORK_ERRORS = (Timeout, CurlConnectionError, ProxyError, DNSError)
+
+
+class ProbeNetworkError(RuntimeError):
+    """探测外呼的网络层失败（超时/连不上/代理/DNS），重试后仍不通。
+
+    单独一个类型 + 干净的中文信息，免得把 curl 那串
+    ``Failed to perform, curl: (28) ... with 0 bytes received. See https://...``
+    原样甩到批量结果里。
+    """
+
+
+def _friendly_network_reason(error: Exception) -> str:
+    if isinstance(error, Timeout):
+        return "连接上游超时"
+    if isinstance(error, ProxyError):
+        return "代理连接失败"
+    if isinstance(error, DNSError):
+        return "DNS 解析失败"
+    if isinstance(error, CurlConnectionError):
+        return "无法连接上游"
+    return "网络请求失败"
 
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 CHATGPT_ME_URL = "https://chatgpt.com/backend-api/me"
@@ -172,13 +211,35 @@ class ProbeHTTPResult:
 
 
 def _perform_get(url: str, headers: dict[str, str], proxy: Optional[str]) -> ProbeHTTPResult:
-    response = cffi_requests.get(
-        url,
-        headers=headers,
-        proxies=_build_proxies(proxy),
-        timeout=20,
-        impersonate="chrome110",
-    )
+    proxies = _build_proxies(proxy)
+    last_error: Exception | None = None
+    for attempt in range(1, _PROBE_MAX_ATTEMPTS + 1):
+        try:
+            response = cffi_requests.get(
+                url,
+                headers=headers,
+                proxies=proxies,
+                timeout=_PROBE_TIMEOUT,
+                impersonate="chrome110",
+            )
+            break
+        except _TRANSIENT_NETWORK_ERRORS as error:
+            # 0 字节超时/连不上多半是瞬时抖动，隔一下再来一次就好；连试都失败才真放弃。
+            last_error = error
+            if attempt < _PROBE_MAX_ATTEMPTS:
+                logger.warning(
+                    "探测外呼瞬时失败，重试 %s/%s: url=%s err=%s",
+                    attempt, _PROBE_MAX_ATTEMPTS, url, error,
+                )
+                time.sleep(_PROBE_RETRY_BACKOFF * attempt)
+                continue
+            # 重试用尽：换成干净的中文错误，别把 curl 原文甩进批量结果
+            raise ProbeNetworkError(
+                f"{_friendly_network_reason(error)}（已重试 {_PROBE_MAX_ATTEMPTS} 次仍失败）"
+            ) from error
+    else:  # pragma: no cover - for/break 保证不会走到
+        raise last_error if last_error else ProbeNetworkError("探测外呼失败")
+
     body_text = response.text or ""
     body_json = _parse_loose_json(body_text)
     header_error_json = _parse_header_error_json(response.headers)
