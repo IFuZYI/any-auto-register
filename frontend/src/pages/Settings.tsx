@@ -27,7 +27,7 @@ import {
   resolveEffectiveMailProvider,
   useStoredMailImportSource,
 } from '@/lib/mailImport'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, chunkList, fetchAccountIds, BATCH_CHUNK_SIZE } from '@/lib/utils'
 
 const SELECT_FIELDS: Record<string, { label: string; value: string }[]> = {
   mail_provider: [
@@ -894,6 +894,25 @@ interface CpaSyncReport {
   [key: string]: unknown
 }
 
+interface CpaSyncResult {
+  total?: number
+  pushed?: number
+  pulled?: number
+  skipped?: number
+  failed?: number
+  unreachable?: boolean
+  message?: string
+  items?: unknown[]
+}
+
+interface BackfillResult {
+  total?: number
+  success?: number
+  failed?: number
+  skipped?: number
+  items?: unknown[]
+}
+
 function IntegrationsPanel() {
   const [items, setItems] = useState<IntegrationService[]>([])
   const [loading, setLoading] = useState(false)
@@ -950,18 +969,46 @@ function IntegrationsPanel() {
   }
 
   const backfill = async (platforms: string[], label: string, busyKey: string) => {
+    const toastKey = `backfill:${busyKey}`
     setBusy(busyKey)
+    message.loading({ content: `${label} 回填准备中...`, key: toastKey, duration: 0 })
     try {
-      const d = await apiFetch('/integrations/backfill', {
-        method: 'POST',
-        body: JSON.stringify({ platforms }),
-      })
-      message.success(`${label} 回填完成：成功 ${d.success} / ${d.total}`)
-      showResultModal(`${label} 回填结果`, d, true)
+      // 先把这些平台命中的账号 ID 全部拉回来（只读、不外呼），再前端切片逐批回填。
+      // 回填是逐账号外呼 CPA，账号一多单请求就会撞 Cloudflare 超时，分片后每批都很短。
+      const idLists = await Promise.all(platforms.map((platform) => fetchAccountIds({ platform })))
+      const accountIds = Array.from(new Set(idLists.flat()))
+      if (accountIds.length === 0) {
+        message.info({ content: `${label} 没有可回填的账号`, key: toastKey })
+        return
+      }
+
+      const aggregated: Required<BackfillResult> = { total: 0, success: 0, failed: 0, skipped: 0, items: [] }
+      const chunks = chunkList(accountIds, BATCH_CHUNK_SIZE)
+      let done = 0
+      for (const chunk of chunks) {
+        const d = (await apiFetch('/integrations/backfill', {
+          method: 'POST',
+          body: JSON.stringify({ platforms, account_ids: chunk }),
+        })) as BackfillResult
+        aggregated.total += d.total || 0
+        aggregated.success += d.success || 0
+        aggregated.failed += d.failed || 0
+        aggregated.skipped += d.skipped || 0
+        if (d.items?.length) aggregated.items.push(...d.items)
+        done += chunk.length
+        message.loading({ content: `${label} 回填进行中... ${done}/${accountIds.length}`, key: toastKey, duration: 0 })
+      }
+
+      if (!aggregated.failed) {
+        message.success({ content: `${label} 回填完成：成功 ${aggregated.success} / ${aggregated.total}`, key: toastKey })
+      } else {
+        message.warning({ content: `${label} 回填部分完成：成功 ${aggregated.success} / ${aggregated.total} / 失败 ${aggregated.failed}`, key: toastKey })
+      }
+      showResultModal(`${label} 回填结果`, aggregated, !aggregated.failed)
       await loadReport()
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e)
-      message.error(detail || `${label} 回填失败`)
+      message.error({ content: detail || `${label} 回填失败`, key: toastKey })
       showResultModal(`${label} 回填结果`, detail || `${label} 回填失败`, false)
     } finally {
       setBusy('')
@@ -988,27 +1035,73 @@ function IntegrationsPanel() {
 
   const runSync = async (mode: 'auto' | 'push_only' | 'pull_only', scope: 'all' | number) => {
     const key = `sync-${mode}-${scope}`
+    const toastKey = `sync:${key}`
     setBusy(key)
     try {
-      const body: Record<string, unknown> = { platforms: ['chatgpt'], mode }
-      if (scope !== 'all') body.account_ids = [scope]
-      const d = await apiFetch('/integrations/sync/accounts', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      })
-      const label = scope === 'all' ? '账号同步' : '单账号同步'
-      if (d.unreachable) {
-        message.error(d.message || 'CPA 面板不可达')
-      } else if (!d.failed) {
-        message.success(`${label}完成：推送 ${d.pushed} / 拉取 ${d.pulled} / 跳过 ${d.skipped}`)
-      } else {
-        message.warning(`${label}部分完成：推送 ${d.pushed} / 拉取 ${d.pulled} / 跳过 ${d.skipped} / 失败 ${d.failed}`)
+      // 单账号：一次请求就够，不用分片
+      if (scope !== 'all') {
+        const d = (await apiFetch('/integrations/sync/accounts', {
+          method: 'POST',
+          body: JSON.stringify({ platforms: ['chatgpt'], mode, account_ids: [scope] }),
+        })) as CpaSyncResult
+        if (d.unreachable) {
+          message.error(d.message || 'CPA 面板不可达')
+        } else if (!d.failed) {
+          message.success(`单账号同步完成：推送 ${d.pushed} / 拉取 ${d.pulled} / 跳过 ${d.skipped}`)
+        } else {
+          message.warning(`单账号同步部分完成：推送 ${d.pushed} / 拉取 ${d.pulled} / 跳过 ${d.skipped} / 失败 ${d.failed}`)
+        }
+        showResultModal('单账号同步结果', d, !d.failed)
+        await loadReport()
+        return
       }
-      showResultModal(`${label}结果`, d, !d.failed)
+
+      // 全量：先拉全部 chatgpt 账号 ID（只读），再前端切片逐批同步。
+      // 同步是逐账号双向外呼，账号一多单请求必撞 Cloudflare 超时，分片后每批都很短。
+      message.loading({ content: '账号同步准备中...', key: toastKey, duration: 0 })
+      const accountIds = await fetchAccountIds({ platform: 'chatgpt' })
+      if (accountIds.length === 0) {
+        message.info({ content: '没有可同步的账号', key: toastKey })
+        return
+      }
+
+      const aggregated: Required<Omit<CpaSyncResult, 'message'>> = {
+        total: 0, pushed: 0, pulled: 0, skipped: 0, failed: 0, unreachable: false, items: [],
+      }
+      const chunks = chunkList(accountIds, BATCH_CHUNK_SIZE)
+      let done = 0
+      for (const chunk of chunks) {
+        const d = (await apiFetch('/integrations/sync/accounts', {
+          method: 'POST',
+          body: JSON.stringify({ platforms: ['chatgpt'], mode, account_ids: chunk }),
+        })) as CpaSyncResult
+        // 面板不可达是全局故障，继续跑后面几批也是白搭，直接收尾
+        if (d.unreachable) {
+          message.error({ content: d.message || 'CPA 面板不可达', key: toastKey })
+          showResultModal('账号同步结果', d, false)
+          await loadReport()
+          return
+        }
+        aggregated.total += d.total || 0
+        aggregated.pushed += d.pushed || 0
+        aggregated.pulled += d.pulled || 0
+        aggregated.skipped += d.skipped || 0
+        aggregated.failed += d.failed || 0
+        if (d.items?.length) aggregated.items.push(...d.items)
+        done += chunk.length
+        message.loading({ content: `账号同步进行中... ${done}/${accountIds.length}`, key: toastKey, duration: 0 })
+      }
+
+      if (!aggregated.failed) {
+        message.success({ content: `账号同步完成：推送 ${aggregated.pushed} / 拉取 ${aggregated.pulled} / 跳过 ${aggregated.skipped}`, key: toastKey })
+      } else {
+        message.warning({ content: `账号同步部分完成：推送 ${aggregated.pushed} / 拉取 ${aggregated.pulled} / 跳过 ${aggregated.skipped} / 失败 ${aggregated.failed}`, key: toastKey })
+      }
+      showResultModal('账号同步结果', aggregated, !aggregated.failed)
       await loadReport()
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e)
-      message.error(detail || '同步失败')
+      message.error({ content: detail || '同步失败', key: toastKey })
       showResultModal('账号同步结果', detail || '同步失败', false)
     } finally {
       setBusy('')

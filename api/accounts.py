@@ -139,6 +139,34 @@ def get_stats(session: Session = Depends(get_session)):
     return {"total": len(accounts), "by_platform": platforms, "by_status": statuses}
 
 
+@router.get("/ids")
+def list_account_ids(
+    platform: Optional[str] = None,
+    status: Optional[str] = None,
+    email: Optional[str] = None,
+    plus_status: Optional[str] = None,
+    created_at_start: Optional[datetime] = None,
+    created_at_end: Optional[datetime] = None,
+    session: Session = Depends(get_session),
+):
+    """只返回筛选后的账号 ID 列表，给前端分片用。只读、不发外呼，不会超时。
+
+    筛选语义和 ``GET /accounts`` 完全一致，前端拿到 ID 后自己切片、逐批调用
+    批量接口（每批带 account_ids），单批请求就能稳稳落在 Cloudflare 的超时窗口内。
+    """
+    rows = _filtered_accounts(
+        session,
+        platform=platform or "",
+        status=status or "",
+        email=email or "",
+        plus_status=plus_status or "",
+        created_at_start=created_at_start,
+        created_at_end=created_at_end,
+    )
+    ids = [row.id for row in rows if row.id is not None]
+    return {"total": len(ids), "ids": ids}
+
+
 @router.get("/export")
 def export_accounts(
     platform: Optional[str] = None,

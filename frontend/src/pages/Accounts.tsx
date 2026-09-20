@@ -44,7 +44,7 @@ import { usePersistentChatGPTRegisterFlow } from '@/hooks/usePersistentChatGPTRe
 import { usePersistentChatGPTRegistrationMode } from '@/hooks/usePersistentChatGPTRegistrationMode'
 import { parseBooleanConfigValue } from '@/lib/configValueParsers'
 import { buildChatGPTRegistrationRequestAdapter } from '@/lib/chatgptRegistrationRequestAdapter'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, chunkList, fetchAccountIds, BATCH_CHUNK_SIZE } from '@/lib/utils'
 import { normalizeExecutorForPlatform } from '@/lib/platforms'
 import {
   DEFAULT_REGISTER_RETRY_TIMES,
@@ -1168,6 +1168,55 @@ export default function Accounts() {
     })
   }
 
+  // 把"要处理哪些账号"统一解析成一份显式 ID 列表：
+  //  - selected：直接用勾选的行；空则告警并返回 null（调用方据此收尾）
+  //  - all：调只读的 /accounts/ids 把当前筛选命中的全部 ID 拉回来，前端再切片
+  const resolveBatchAccountIds = async (
+    scope: 'selected' | 'all',
+    emptySelectionWarning: string,
+  ): Promise<number[] | null> => {
+    if (scope === 'selected') {
+      const ids = Array.from(selectedRowKeys)
+        .map((value) => Number(value))
+        .filter((value) => Number.isInteger(value) && value > 0)
+      if (ids.length === 0) {
+        message.warning(emptySelectionWarning)
+        return null
+      }
+      return ids
+    }
+    return fetchAccountIds({
+      platform: currentPlatform,
+      email: search || undefined,
+      status: filterStatus || undefined,
+      plus_status: filterPlusStatus || undefined,
+    })
+  }
+
+  // 逐批调用 /actions/{platform}/{actionId}/batch，把每批结果累加成一份总账。
+  const runBatchActionChunks = async (
+    actionId: string,
+    accountIds: number[],
+    onProgress?: (done: number, total: number) => void,
+  ): Promise<Required<BatchActionResult>> => {
+    const aggregated: Required<BatchActionResult> = { total: 0, success: 0, failed: 0, items: [] }
+    const chunks = chunkList(accountIds, BATCH_CHUNK_SIZE)
+    let done = 0
+    for (const chunk of chunks) {
+      const result = (await apiFetch(`/actions/${currentPlatform}/${actionId}/batch`, {
+        method: 'POST',
+        body: JSON.stringify({ account_ids: chunk, params: {} }),
+      })) as BatchActionResult
+      aggregated.total += result.total || 0
+      aggregated.success += result.success || 0
+      aggregated.failed += result.failed || 0
+      if (result.items?.length) aggregated.items.push(...result.items)
+      done += chunk.length
+      onProgress?.(done, accountIds.length)
+    }
+    return aggregated
+  }
+
   const handleBatchStatusSync = async (kind: 'probe' | 'remote' | 'plus', scope: 'selected' | 'all') => {
     if (currentPlatform !== 'chatgpt') return
 
@@ -1179,33 +1228,27 @@ export default function Accounts() {
     const scopeLabel = scope === 'selected' ? '所选账号' : '当前筛选账号'
     const toastKey = `status-sync:${loadingKey}`
 
-    const body: Record<string, unknown> = {
-      params: {},
-    }
-
-    if (scope === 'selected') {
-      const accountIds = Array.from(selectedRowKeys)
-        .map((value) => Number(value))
-        .filter((value) => Number.isInteger(value) && value > 0)
-
-      if (accountIds.length === 0) {
-        message.warning('请先选择要同步的账号')
+    setStatusSyncLoading(loadingKey)
+    message.loading({ content: `${scopeLabel}${actionLabel}准备中...`, key: toastKey, duration: 0 })
+    try {
+      const accountIds = await resolveBatchAccountIds(scope, '请先选择要同步的账号')
+      if (accountIds === null) {
+        message.destroy(toastKey)
         return
       }
-      body.account_ids = accountIds
-    } else {
-      body.all_filtered = true
-      if (search) body.email = search
-      if (filterStatus) body.status = filterStatus
-      if (filterPlusStatus) body.plus_status = filterPlusStatus
-    }
+      if (accountIds.length === 0) {
+        message.info({ content: '没有可处理的账号', key: toastKey })
+        return
+      }
 
-    setStatusSyncLoading(loadingKey)
-    message.loading({ content: `${scopeLabel}${actionLabel}进行中...`, key: toastKey, duration: 0 })
-    try {
-      const result = await apiFetch(`/actions/${currentPlatform}/${actionId}/batch`, {
-        method: 'POST',
-        body: JSON.stringify(body),
+      // 前端分片：把命中的账号切成小批，逐批请求。每批都带显式 account_ids，
+      // 单批远小于 Cloudflare 超时窗口，整体进度用 toast 实时刷新。
+      const result = await runBatchActionChunks(actionId, accountIds, (done, totalCount) => {
+        message.loading({
+          content: `${scopeLabel}${actionLabel}进行中... ${done}/${totalCount}`,
+          key: toastKey,
+          duration: 0,
+        })
       })
 
       if (!result.total) {
@@ -1231,33 +1274,25 @@ export default function Accounts() {
     const toastKey = `batch-upload-cpa:${scope}`
     const scopeLabel = scope === 'selected' ? '所选账号' : '当前筛选账号'
 
-    const body: Record<string, unknown> = {
-      params: {},
-    }
-
-    if (scope === 'selected') {
-      const accountIds = Array.from(selectedRowKeys)
-        .map((value) => Number(value))
-        .filter((value) => Number.isInteger(value) && value > 0)
-
-      if (accountIds.length === 0) {
-        message.warning('请先选择要导入 CPA 的账号')
+    setCpaUploadLoading(scope)
+    message.loading({ content: `${scopeLabel}导入 CPA 准备中...`, key: toastKey, duration: 0 })
+    try {
+      const accountIds = await resolveBatchAccountIds(scope, '请先选择要导入 CPA 的账号')
+      if (accountIds === null) {
+        message.destroy(toastKey)
         return
       }
-      body.account_ids = accountIds
-    } else {
-      body.all_filtered = true
-      if (search) body.email = search
-      if (filterStatus) body.status = filterStatus
-      if (filterPlusStatus) body.plus_status = filterPlusStatus
-    }
+      if (accountIds.length === 0) {
+        message.info({ content: '没有可处理的账号', key: toastKey })
+        return
+      }
 
-    setCpaUploadLoading(scope)
-    message.loading({ content: `${scopeLabel}导入 CPA 进行中...`, key: toastKey, duration: 0 })
-    try {
-      const result = await apiFetch(`/actions/${currentPlatform}/upload_cpa/batch`, {
-        method: 'POST',
-        body: JSON.stringify(body),
+      const result = await runBatchActionChunks('upload_cpa', accountIds, (done, totalCount) => {
+        message.loading({
+          content: `${scopeLabel}导入 CPA 进行中... ${done}/${totalCount}`,
+          key: toastKey,
+          duration: 0,
+        })
       })
 
       if (!result.total) {
